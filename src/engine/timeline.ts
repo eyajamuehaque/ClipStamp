@@ -39,14 +39,14 @@ const ASPECTS: Record<Exclude<CanvasAspect, 'source'>, number> = {
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 /**
- * Output frame size, derived from the first clip: rotate → crop → canvas shape → resolution.
- * Every other clip is fitted inside this frame.
+ * Output frame size, derived from the first clip: rotate → its crop → canvas shape → resolution.
+ * Every other clip (with its own crop) is fitted inside this frame.
  */
 export function outputSize(doc: Doc, resolution = doc.output.resolution) {
   const ref = doc.clips[0];
   if (!ref) return { w: 1280, h: 720 };
   const rd = rotatedDims(ref.width, ref.height, ref.rotation);
-  const crop = doc.framing.crop;
+  const crop = ref.crop;
   let w = crop ? rd.w * crop.w : rd.w;
   let h = crop ? rd.h * crop.h : rd.h;
   if (doc.framing.aspect !== 'source') {

@@ -67,8 +67,8 @@ export function emptyDoc(): Doc {
     hidesEnabled: true,
     overlaysEnabled: true,
     color: { ...DEFAULT_COLOR },
-    framing: { flipH: false, flipV: false, crop: null, cropLock: null, aspect: 'source', bg: 'blur', bgColor: '#101418' },
-    audio: { music: null, musicVolume: 0.6, musicOffset: 0, musicLoop: true, duck: true, fadeIn: 0, fadeOut: 0, videoFade: true },
+    framing: { flipH: false, flipV: false, aspect: 'source', bg: 'blur', bgColor: '#101418' },
+    audio: { sources: [], clips: [], duck: true, fadeIn: 0, fadeOut: 0, videoFade: true },
     output: { format: 'mp4', resolution: 0, quality: 'match', customMbps: 8, fps: 0, gifWidth: 480, gifFps: 12 },
   };
 }

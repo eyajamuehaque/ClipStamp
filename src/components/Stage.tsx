@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, currentClip, patchOverlay, patchHide, edit, patchDoc } from '../store';
+import { useStore, currentClip, patchOverlay, patchHide, edit, patchClip } from '../store';
 import { video, syncPlayer, videoReady, addVideoFiles } from '../player';
 import { createRenderer, type OverlayBounds, type FrameSource } from '../engine/render';
 import { outputSize, rotatedDims, toOutputTime, totalDuration, clamp } from '../engine/timeline';
@@ -13,7 +13,7 @@ const HIDE_MIN = 0.01;
 
 type Drag =
   | { kind: 'overlay'; id: string; sx: number; sy: number; ox: number; oy: number }
-  | { kind: 'crop'; handle: string; sx: number; sy: number; rect: Rect }
+  | { kind: 'crop'; clipId: string; handle: string; sx: number; sy: number; rect: Rect }
   | { kind: 'hide'; id: string; handle: string; sx: number; sy: number; rect: Rect }
   | { kind: 'hide-new'; id: string; ax: number; ay: number };
 
@@ -54,7 +54,7 @@ export default function Stage() {
         const f = renderer.drawFrame(src, clip, doc, video.currentTime, k);
         if (canvas.width !== f.width || canvas.height !== f.height) { canvas.width = f.width; canvas.height = f.height; }
         ctx.drawImage(f, 0, 0);
-        if (s.stageMode === 'crop') drawCrop(ctx, canvas.width, canvas.height, doc.framing.crop, !!doc.framing.cropLock);
+        if (s.stageMode === 'crop') drawCrop(ctx, canvas.width, canvas.height, clip.crop, !!clip.cropLock);
         else drawHides(ctx, canvas.width, canvas.height, video.currentTime);
       }
     };
@@ -81,11 +81,12 @@ export default function Stage() {
       useStore.setState({ selectedOverlayId: hit.id, tool: o.kind === 'text' ? 'text' : 'logo' });
       drag.current = { kind: 'overlay', id: hit.id, sx: p.x / W, sy: p.y / H, ox: o.x, oy: o.y };
     } else if (s.stageMode === 'crop') {
-      const crop = s.doc.framing.crop;
-      if (!crop) return;
-      const handle = hitHandles(crop, p.x, p.y, W, H, 16 * p.scale, !!s.doc.framing.cropLock);
+      const clip = currentClip(s);
+      const crop = clip?.crop;
+      if (!clip || !crop) return;
+      const handle = hitHandles(crop, p.x, p.y, W, H, 16 * p.scale, !!clip.cropLock);
       if (!handle) return;
-      drag.current = { kind: 'crop', handle, sx: p.x / W, sy: p.y / H, rect: { ...crop } };
+      drag.current = { kind: 'crop', clipId: clip.id, handle, sx: p.x / W, sy: p.y / H, rect: { ...crop } };
     } else {
       const active = s.doc.hides.find(h => h.id === s.activeHideId);
       let handle = active ? hitHandles(active, p.x, p.y, W, H, 16 * p.scale, false) : null;
@@ -121,10 +122,10 @@ export default function Stage() {
       patchOverlay(d.id, { x: clamp(d.ox + nx - d.sx, 0, 1), y: clamp(d.oy + ny - d.sy, 0, 1) }, 'drag-' + d.id);
     } else if (d.kind === 'crop') {
       const dx = nx - d.sx, dy = ny - d.sy;
-      const lock = !!useStore.getState().doc.framing.cropLock;
+      const lock = !!useStore.getState().doc.clips.find(x => x.id === d.clipId)?.cropLock;
       const rect = d.handle === 'move' ? moveRect(d.rect, dx, dy)
         : lock ? resizeLocked(d.handle, d.rect, dx) : resizeFree(d.handle, d.rect, dx, dy, CROP_MIN);
-      patchDoc('framing', { crop: rect }, 'crop-drag');
+      patchClip(d.clipId, { crop: rect }, 'crop-drag');
     } else if (d.kind === 'hide') {
       const dx = nx - d.sx, dy = ny - d.sy;
       const rect = d.handle === 'move' ? moveRect(d.rect, dx, dy) : resizeFree(d.handle, d.rect, dx, dy, HIDE_MIN);
@@ -153,7 +154,8 @@ export default function Stage() {
     const c = canvasRef.current!;
     if (s.stageMode === 'output') return bounds.current.some(b => inBounds(b, p.x, p.y)) ? 'move' : 'default';
     if (s.stageMode === 'crop') {
-      const h = s.doc.framing.crop && hitHandles(s.doc.framing.crop, p.x, p.y, c.width, c.height, 16 * p.scale, !!s.doc.framing.cropLock);
+      const cl = currentClip(s);
+      const h = cl?.crop && hitHandles(cl.crop, p.x, p.y, c.width, c.height, 16 * p.scale, !!cl.cropLock);
       return h ? HANDLE_CURSOR[h] : 'default';
     }
     const a = s.doc.hides.find(h => h.id === s.activeHideId);
@@ -184,7 +186,8 @@ export default function Stage() {
         {([['output', 'Final video'], ['crop', 'Crop'], ['hide', 'Logo areas']] as const).map(([m, label]) => (
           <button key={m} role="tab" aria-selected={stageMode === m} className={stageMode === m ? 'on' : ''}
             onClick={() => {
-              if (m === 'crop' && !useStore.getState().doc.framing.crop) patchDoc('framing', { crop: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, cropLock: null });
+              const cl = currentClip();
+              if (m === 'crop' && cl && !cl.crop) patchClip(cl.id, { crop: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, cropLock: null });
               useStore.setState({ stageMode: m, tool: m === 'crop' ? 'adjust' : m === 'hide' ? 'remove' : useStore.getState().tool });
             }}>{label}</button>
         ))}
@@ -195,7 +198,7 @@ export default function Stage() {
         <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
       </div>
       {stageMode === 'hide' && <p className="stage-hint">Drag a box over the old logo. Make it a little bigger than the logo so its shadow is covered too.</p>}
-      {stageMode === 'crop' && <p className="stage-hint">Drag inside the box to move it, or drag a corner to resize.</p>}
+      {stageMode === 'crop' && <p className="stage-hint">Drag inside the box to move it, or drag a corner to resize. This crop only changes the selected clip.</p>}
     </div>
   );
 }

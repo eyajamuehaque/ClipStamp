@@ -48,13 +48,16 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
     await preloadFonts(doc.overlays);
     await preloadImages(doc.overlays);
 
-    let music: AudioBuffer | null = null;
-    if (doc.audio.music) {
-      onProgress(0, 'Decoding music…');
+    // Decode each added audio file once, however many times it's placed on the timeline.
+    const sounds = new Map<string, AudioBuffer>();
+    for (const src of doc.audio.sources) {
+      if (!doc.audio.clips.some(a => a.sourceId === src.id)) continue;
+      onProgress(0, `Decoding ${src.name}…`);
       const ac = new OfflineAudioContext(2, 1, SR);
-      music = await ac.decodeAudioData(await doc.audio.music.file.arrayBuffer());
+      try { sounds.set(src.id, await ac.decodeAudioData(await src.file.arrayBuffer())); }
+      catch { throw new Error(`"${src.name}" couldn't be decoded. Try converting it to MP3 or WAV.`); }
     }
-    const wantAudio = opened.some(o => o.audio && !o.clip.muted && o.clip.volume > 0) || !!music;
+    const wantAudio = opened.some(o => o.audio && !o.clip.muted && o.clip.volume > 0) || sounds.size > 0;
 
     const base = (clips.length > 1 ? 'clipsmith-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
 
@@ -123,7 +126,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
         }
         if (audioSource) {
           onProgress(Math.min(0.99, (offset + clipOutDur(o.clip)) / total), `${label} — mixing audio`);
-          await mixClipAudio(doc, o, offset, total, music, audioSource, check);
+          await mixClipAudio(doc, o, offset, total, sounds, audioSource, check);
         }
         offset += clipOutDur(o.clip);
       }
@@ -165,7 +168,7 @@ function pickQuality(doc: Doc, total: number): Quality {
 }
 
 async function mixClipAudio(
-  doc: Doc, o: Opened, offset: number, total: number, music: AudioBuffer | null,
+  doc: Doc, o: Opened, offset: number, total: number, sounds: Map<string, AudioBuffer>,
   dest: AudioBufferSource, check: () => void,
 ) {
   const c = o.clip;
@@ -194,25 +197,31 @@ async function mixClipAudio(
       }
     }
 
-    if (music) {
-      const g0 = offset + w0;
-      const mt = g0 - a.musicOffset;
-      const mg = ctx.createGain();
-      mg.gain.value = a.musicVolume * (a.duck && useClip ? 0.35 : 1);
-      mg.connect(ctx.destination);
+    // Added audio clips that overlap this window (output time g0..g1).
+    const g0 = offset + w0, g1 = offset + w1;
+    const duck = a.duck && useClip ? 0.35 : 1;
+    for (const ac of a.clips) {
+      const buf = sounds.get(ac.sourceId);
+      if (!buf || ac.volume <= 0) continue;
+      const s0 = Math.max(g0, ac.start), s1 = Math.min(g1, ac.start + ac.len);
+      if (s1 <= s0) continue;
+      let pos = ac.in + (s0 - ac.start);
+      let dur = s1 - s0;
+      if (ac.loop) pos %= buf.duration;
+      else { if (pos >= buf.duration) continue; dur = Math.min(dur, buf.duration - pos); }
+      const g = ctx.createGain();
+      g.gain.value = ac.volume * duck;
+      g.connect(ctx.destination);
       const node = ctx.createBufferSource();
-      node.buffer = music;
-      node.loop = a.musicLoop;
-      node.connect(mg);
-      if (mt >= 0) {
-        if (a.musicLoop || mt < music.duration) node.start(0, a.musicLoop ? mt % music.duration : mt);
-      } else if (-mt < w1 - w0) node.start(-mt, 0);
+      node.buffer = buf;
+      node.loop = ac.loop;
+      node.connect(g);
+      node.start(s0 - g0, pos, dur);
     }
 
     const out = await ctx.startRendering();
     // Fade in/out across the whole output.
     if (a.fadeIn > 0 || a.fadeOut > 0) {
-      const g0 = offset + w0;
       for (let ch = 0; ch < out.numberOfChannels; ch++) {
         const d = out.getChannelData(ch);
         for (let i = 0; i < d.length; i++) {

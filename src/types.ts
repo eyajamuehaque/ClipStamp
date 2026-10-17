@@ -21,6 +21,8 @@ export interface Clip {
   speed: number;        // 0.25..4
   volume: number;       // 0..2 (1 = original)
   muted: boolean;
+  crop: Rect | null;    // normalized to the rotated source frame; each clip has its own
+  cropLock: { w: number; h: number } | null;
 }
 
 export type Motion = 'none' | 'horizontal' | 'vertical' | 'bounce';
@@ -102,19 +104,29 @@ export type BgFill = 'black' | 'color' | 'blur';
 export interface Framing {
   flipH: boolean;
   flipV: boolean;
-  crop: Rect | null;            // normalized to the rotated source frame
-  cropLock: { w: number; h: number } | null;
   aspect: CanvasAspect;         // output canvas shape (content is fitted inside)
   bg: BgFill;
   bgColor: string;
 }
 
+/** An imported audio file. Several audio clips can play the same source. */
+export interface AudioSource { id: string; name: string; file: File; duration: number }
+
+/** One placement of an audio source on the output timeline. */
+export interface AudioClip {
+  id: string;
+  sourceId: string;
+  start: number;        // output seconds where it begins
+  in: number;           // seconds into the source where playback starts
+  len: number;          // seconds it plays for
+  volume: number;       // 0..2
+  loop: boolean;        // repeat the source to fill `len`
+}
+
 export interface AudioSettings {
-  music: { id: string; name: string; file: File; duration: number } | null;
-  musicVolume: number;  // 0..2
-  musicOffset: number;  // seconds into the output where the music starts
-  musicLoop: boolean;
-  duck: boolean;        // lower the music while clips have audio
+  sources: AudioSource[];
+  clips: AudioClip[];
+  duck: boolean;        // lower added audio while video clips have sound
   fadeIn: number;       // seconds, audio + video
   fadeOut: number;
   videoFade: boolean;   // also fade the picture from/to black

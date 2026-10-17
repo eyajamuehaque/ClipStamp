@@ -36,7 +36,7 @@ export async function probeClip(file: File, id = uid()): Promise<Clip> {
   return {
     id, file, url, name: file.name, size: file.size, duration,
     width: v.videoWidth, height: v.videoHeight, hasAudio, thumb,
-    trimStart: 0, trimEnd: duration, rotation: 0, speed: 1, volume: 1, muted: false,
+    trimStart: 0, trimEnd: duration, rotation: 0, speed: 1, volume: 1, muted: false, crop: null, cropLock: null,
   };
 }
 

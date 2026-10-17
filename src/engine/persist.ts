@@ -1,7 +1,8 @@
 // Autosave to this browser's IndexedDB — including the video files themselves, so a refresh
 // (or reopening the installed app offline) brings the whole project back. Nothing leaves the device.
-import type { Doc } from '../types';
-import { emptyDoc } from '../defaults';
+import type { AudioClip, AudioSettings, AudioSource, Doc } from '../types';
+import { emptyDoc, uid } from '../defaults';
+import { totalDuration } from './timeline';
 
 const DB = 'clipsmith';
 const STORE_DOC = 'doc';
@@ -36,7 +37,7 @@ function toStored(doc: Doc) {
   return {
     ...doc,
     clips: doc.clips.map(({ file: _f, url: _u, ...rest }) => rest),
-    audio: { ...doc.audio, music: doc.audio.music ? { ...doc.audio.music, file: undefined } : null },
+    audio: { ...doc.audio, sources: doc.audio.sources.map(({ file: _f, ...rest }) => rest) },
   };
 }
 
@@ -47,8 +48,7 @@ export async function saveProject(doc: Doc) {
     ids.add(c.id);
     if (!savedFiles.has(c.id)) { await tx(db, STORE_FILES, 'readwrite', s => s.put(c.file, c.id)); savedFiles.add(c.id); }
   }
-  const m = doc.audio.music;
-  if (m) {
+  for (const m of doc.audio.sources) {
     ids.add(m.id);
     if (!savedFiles.has(m.id)) { await tx(db, STORE_FILES, 'readwrite', s => s.put(m.file, m.id)); savedFiles.add(m.id); }
   }
@@ -70,26 +70,42 @@ export async function loadProject(): Promise<Doc | null> {
       const file = await tx<File>(db, STORE_FILES, 'readonly', s => s.get(c.id));
       if (!file) continue;
       savedFiles.add(c.id);
-      clips.push({ ...c, file, url: URL.createObjectURL(file) });
+      // Older saves kept one crop for the whole project; give it to every clip.
+      clips.push({ crop: stored.framing?.crop ?? null, cropLock: stored.framing?.cropLock ?? null, ...c, file, url: URL.createObjectURL(file) });
     }
-    let music = null;
-    if (stored.audio?.music) {
-      const file = await tx<File>(db, STORE_FILES, 'readonly', s => s.get(stored.audio.music.id));
-      if (file) { savedFiles.add(stored.audio.music.id); music = { ...stored.audio.music, file }; }
+    const audio = migrateAudio(stored.audio ?? {}, totalDuration(clips));
+    const sources: AudioSource[] = [];
+    for (const m of audio.sources) {
+      const file = await tx<File>(db, STORE_FILES, 'readonly', s => s.get(m.id));
+      if (file) { savedFiles.add(m.id); sources.push({ ...m, file }); }
     }
     db.close();
+    const { crop: _c, cropLock: _l, ...framing } = stored.framing ?? {};
     return {
       ...base, ...stored,
       color: { ...base.color, ...stored.color },
-      framing: { ...base.framing, ...stored.framing },
+      framing: { ...base.framing, ...framing },
       output: { ...base.output, ...stored.output },
-      audio: { ...base.audio, ...stored.audio, music },
+      audio: { ...base.audio, ...audio, sources, clips: audio.clips.filter(a => sources.some(src => src.id === a.sourceId)) },
       clips,
     };
   } catch (e) {
     console.warn('Could not restore the autosaved project', e);
     return null;
   }
+}
+
+/** Older saves had a single `music` track; turn it into one audio clip. */
+function migrateAudio(a: any, total: number): Omit<AudioSettings, 'sources'> & { sources: any[] } {
+  if (Array.isArray(a.sources)) return a;
+  const { music, musicVolume, musicOffset, musicLoop, ...rest } = a;
+  const clips: AudioClip[] = [];
+  if (music) {
+    const start = musicOffset ?? 0;
+    const len = musicLoop !== false ? Math.max(0.1, total - start) : music.duration;
+    clips.push({ id: uid(), sourceId: music.id, start, in: 0, len, volume: musicVolume ?? 0.6, loop: musicLoop !== false });
+  }
+  return { ...emptyDoc().audio, ...rest, sources: music ? [music] : [], clips };
 }
 
 export async function clearProject() {
@@ -116,15 +132,20 @@ export function applyProjectJson(current: Doc, text: string): { doc: Doc; matche
     const m = wanted.find(w => w.name === c.name && w.size === c.size);
     if (!m) return c;
     matched++;
-    return { ...c, trimStart: m.trimStart, trimEnd: m.trimEnd, rotation: m.rotation, speed: m.speed, volume: m.volume ?? 1, muted: !!m.muted };
+    return {
+      ...c, trimStart: m.trimStart, trimEnd: m.trimEnd, rotation: m.rotation, speed: m.speed, volume: m.volume ?? 1, muted: !!m.muted,
+      crop: m.crop ?? s.framing?.crop ?? null, cropLock: m.cropLock ?? s.framing?.cropLock ?? null,
+    };
   });
   return {
     doc: {
       ...current,
       overlays: s.overlays ?? [], hides: s.hides ?? [],
       hidesEnabled: s.hidesEnabled ?? true, overlaysEnabled: s.overlaysEnabled ?? true,
-      color: { ...base.color, ...s.color }, framing: { ...base.framing, ...s.framing },
-      output: { ...base.output, ...s.output }, audio: { ...current.audio, ...s.audio, music: current.audio.music },
+      color: { ...base.color, ...s.color }, framing: { ...base.framing, flipH: !!s.framing?.flipH, flipV: !!s.framing?.flipV, aspect: s.framing?.aspect ?? base.framing.aspect, bg: s.framing?.bg ?? base.framing.bg, bgColor: s.framing?.bgColor ?? base.framing.bgColor },
+      // Audio files aren't in the settings file, so keep the current audio and only take the mix settings.
+      output: { ...base.output, ...s.output },
+      audio: { ...current.audio, duck: s.audio?.duck ?? current.audio.duck, fadeIn: s.audio?.fadeIn ?? 0, fadeOut: s.audio?.fadeOut ?? 0, videoFade: s.audio?.videoFade ?? true },
       clips,
     },
     matched, wanted: wanted.length,

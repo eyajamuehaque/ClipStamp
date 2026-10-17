@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { useStore, useCurrentClip, patchClip, patchOverlay, patchHide, patchDoc, edit, notify } from '../store';
+import { useStore, useCurrentClip, patchClip, patchOverlay, patchHide, patchDoc, patchAudioClip, removeAudioClip, edit, notify } from '../store';
 import { Section, Slider, Seg, Toggle, Field, ColorInput, Note } from './ui';
 import { FONTS, COLOR_PRESETS, DEFAULT_COLOR, newText, newImage, newHide, uid, emptyDoc } from '../defaults';
 import { readImage, probeAudio, download } from '../engine/media';
 import { clipOutDur, fmtClock, fmtBytes, outputSize, totalDuration, clamp } from '../engine/timeline';
 import { startExport, ExportCanceled, type ExportJob } from '../engine/export';
 import { projectToJson, applyProjectJson, clearProject } from '../engine/persist';
-import { addVideoFiles, video, seek } from '../player';
+import { addVideoFiles, video, seek, outputNow } from '../player';
 import { FULL_END } from '../types';
-import type { CanvasAspect, ExportFormat, HideMode, ImageOverlay, Rotation, TextOverlay, Entrance, Motion } from '../types';
+import type { AudioClip, AudioSource, Rect, CanvasAspect, ExportFormat, HideMode, ImageOverlay, Rotation, TextOverlay, Entrance, Motion } from '../types';
 
 const ENTRANCES: { value: Entrance; label: string }[] = [
   { value: 'none', label: 'None' }, { value: 'fade', label: 'Fade' }, { value: 'slide', label: 'Slide' },
@@ -349,29 +349,39 @@ export function AdjustPanel() {
   const clip = useCurrentClip();
   const doc = useStore(s => s.doc);
   const size = outputSize(doc);
+  const setCrop = (crop: Rect | null, cropLock: { w: number; h: number } | null) => { if (clip) patchClip(clip.id, { crop, cropLock }); };
   const pickRatio = (v: (typeof RATIOS)[number]['v']) => {
-    if (!v) { patchDoc('framing', { crop: null, cropLock: null }); useStore.setState({ stageMode: 'output' }); return; }
-    if (v === 'free') { patchDoc('framing', { crop: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, cropLock: null }); }
+    if (!clip) return;
+    if (!v) { setCrop(null, null); useStore.setState({ stageMode: 'output' }); return; }
+    if (v === 'free') setCrop({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, null);
     else {
-      const vw = clip ? (clip.rotation % 180 ? clip.height : clip.width) : 16;
-      const vh = clip ? (clip.rotation % 180 ? clip.width : clip.height) : 9;
+      const vw = clip.rotation % 180 ? clip.height : clip.width;
+      const vh = clip.rotation % 180 ? clip.width : clip.height;
       const target = v.w / v.h, srcR = vw / vh;
       let w = 1, h = 1;
       if (target > srcR) h = (vw / target) / vh; else w = (vh * target) / vw;
-      patchDoc('framing', { crop: { x: (1 - w) / 2, y: (1 - h) / 2, w, h }, cropLock: v });
+      setCrop({ x: (1 - w) / 2, y: (1 - h) / 2, w, h }, v);
     }
     useStore.setState({ stageMode: 'crop' });
   };
+  const applyToAll = () => {
+    if (!clip) return;
+    edit(d => ({ ...d, clips: d.clips.map(c => ({ ...c, crop: clip.crop, cropLock: clip.cropLock })) }));
+    notify('Crop copied to every clip.');
+  };
+  const idx = doc.clips.findIndex(c => c.id === clip?.id);
   return (
     <>
-      <Section title="Crop">
+      <Section title={doc.clips.length > 1 && idx >= 0 ? `Crop — clip ${idx + 1}` : 'Crop'}>
         <div className="chips">
           {RATIOS.map(r => {
-            const on = r.v === null ? !fr.crop : r.v === 'free' ? !!fr.crop && !fr.cropLock : !!fr.cropLock && fr.cropLock.w === r.v.w && fr.cropLock.h === r.v.h;
-            return <button key={r.label} className={'chip' + (on ? ' on' : '')} onClick={() => pickRatio(r.v)}>{r.label}</button>;
+            const crop = clip?.crop ?? null, lock = clip?.cropLock ?? null;
+            const on = r.v === null ? !crop : r.v === 'free' ? !!crop && !lock : !!lock && lock.w === r.v.w && lock.h === r.v.h;
+            return <button key={r.label} className={'chip' + (on ? ' on' : '')} disabled={!clip} onClick={() => pickRatio(r.v)}>{r.label}</button>;
           })}
         </div>
-        <Note>Cuts the picture down. Adjust the box in the “Crop” preview.</Note>
+        <Note>Cuts the picture down for the selected clip only. Adjust the box in the “Crop” preview, then pick another clip in the strip to crop it differently.</Note>
+        {doc.clips.length > 1 && <button className="link" onClick={applyToAll}>Use this crop on every clip</button>}
       </Section>
       <Section title="Canvas shape">
         <Seg value={fr.aspect} onChange={v => patchDoc('framing', { aspect: v as CanvasAspect })}
@@ -427,30 +437,86 @@ export function ColorPanel() {
 export function AudioPanel() {
   const a = useStore(s => s.doc.audio);
   const total = useStore(s => totalDuration(s.doc.clips));
+  const selId = useStore(s => s.selectedAudioId);
+  useStore(s => s.time); // re-render as the playhead moves, for the "at playhead" buttons
   const set = (p: Partial<typeof a>, key?: string) => patchDoc('audio', p, key);
+  const sel = a.clips.find(x => x.id === selId) ?? null;
+  const selSrc = sel ? a.sources.find(x => x.id === sel.sourceId) ?? null : null;
+  const now = outputNow();
+
+  const place = (src: AudioSource, at: number) => {
+    const ac: AudioClip = { id: uid(), sourceId: src.id, start: at, in: 0, len: Math.max(0.1, src.duration), volume: 0.8, loop: false };
+    edit(d => ({ ...d, audio: { ...d.audio, clips: [...d.audio.clips, ac] } }));
+    useStore.setState({ selectedAudioId: ac.id, selectedOverlayId: null, selectedSeg: null });
+  };
+  const addFiles = async (files: File[]) => {
+    for (const f of files) {
+      try {
+        const src = await probeAudio(f);
+        edit(d => ({ ...d, audio: { ...d.audio, sources: [...d.audio.sources, src] } }));
+        place(src, outputNow());
+      } catch (err: any) { notify(err.message, 'error'); }
+    }
+  };
+  const copyTo = (at: number) => {
+    if (!sel) return;
+    const ac = { ...sel, id: uid(), start: at };
+    edit(d => ({ ...d, audio: { ...d.audio, clips: [...d.audio.clips, ac] } }));
+    useStore.setState({ selectedAudioId: ac.id });
+  };
+  const splitAt = (t: number) => {
+    if (!sel || !selSrc || t <= sel.start + 0.1 || t >= sel.start + sel.len - 0.1) return;
+    const cut = t - sel.start;
+    let nextIn = sel.in + cut;
+    if (sel.loop && selSrc.duration) nextIn %= selSrc.duration;
+    const second = { ...sel, id: uid(), start: t, in: nextIn, len: sel.len - cut };
+    edit(d => ({ ...d, audio: { ...d.audio, clips: d.audio.clips.flatMap(x => x.id === sel.id ? [{ ...x, len: cut }, second] : [x]) } }));
+  };
+  const setLoop = (loop: boolean) => {
+    if (!sel || !selSrc) return;
+    const len = loop ? Math.max(sel.len, total - sel.start) : Math.min(sel.len, Math.max(0.1, selSrc.duration - sel.in));
+    patchAudioClip(sel.id, { loop, len });
+  };
+  const inside = sel && now > sel.start + 0.1 && now < sel.start + sel.len - 0.1;
+
   return (
     <>
-      <Section title="Background music">
-        {a.music ? (
-          <>
-            <p className="meta">{a.music.name} · {fmtClock(a.music.duration)}</p>
-            <Slider label="Music volume" value={Math.round(a.musicVolume * 100)} min={0} max={200} format={v => v + '%'} onChange={v => set({ musicVolume: v / 100 }, 'mv')} />
-            <Slider label="Starts at" value={a.musicOffset} min={0} max={Math.max(1, Math.floor(total))} step={0.5} format={v => fmtClock(v, true)} onChange={v => set({ musicOffset: v }, 'mo')} />
-            <Toggle label="Loop to fill the video" checked={a.musicLoop} onChange={v => set({ musicLoop: v })} />
-            <Toggle label="Lower music under clips that have sound" checked={a.duck} onChange={v => set({ duck: v })} />
-            <button className="btn danger sm" onClick={() => set({ music: null })}>Remove music</button>
-          </>
-        ) : (
-          <label className="btn primary">
-            Add music
-            <input type="file" accept="audio/*" hidden onChange={async e => {
-              const f = e.target.files?.[0]; e.target.value = '';
-              if (!f) return;
-              try { set({ music: await probeAudio(f) }); } catch (err: any) { notify(err.message, 'error'); }
-            }} />
-          </label>
+      <Section title="Music and sound">
+        <label className="btn primary">
+          Add audio at playhead
+          <input type="file" accept="audio/*" multiple hidden onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; addFiles(f); }} />
+        </label>
+        <Note>MP3, WAV, M4A or OGG from your device. Each one appears in the Audio lane under the timeline — drag it to move it, drag its edges to trim.</Note>
+        {a.sources.length > 0 && (
+          <ul className="audio-src">
+            {a.sources.map(src => {
+              const n = a.clips.filter(x => x.sourceId === src.id).length;
+              return (
+                <li key={src.id}>
+                  <span className="meta">{src.name} · {fmtClock(src.duration)}{n > 1 ? ` · used ${n}×` : ''}</span>
+                  <button className="link" onClick={() => place(src, now)}>Add at {fmtClock(now, true)}</button>
+                </li>
+              );
+            })}
+          </ul>
         )}
-        <Note>MP3, WAV, M4A or OGG from your device. It's mixed into the export with each clip's own sound.</Note>
+      </Section>
+      {sel && selSrc ? (
+        <Section title="Selected audio" aside={<button className="link" onClick={() => useStore.setState({ selectedAudioId: null })}>Done</button>}>
+          <p className="meta">{selSrc.name} · plays {fmtClock(sel.start, true)}–{fmtClock(sel.start + sel.len, true)}{sel.in > 0.05 ? ` (from ${fmtClock(sel.in, true)} into the file)` : ''}</p>
+          <Slider label="Volume" value={Math.round(sel.volume * 100)} min={0} max={200} format={v => v + '%'} onChange={v => patchAudioClip(sel.id, { volume: v / 100 }, 'av')} />
+          <Slider label="Starts at" value={sel.start} min={0} max={Math.max(1, total)} step={0.1} format={v => fmtClock(v, true)} onChange={v => patchAudioClip(sel.id, { start: v }, 'as')} />
+          <Toggle label="Repeat to fill (loop)" checked={sel.loop} onChange={setLoop} />
+          <div className="row">
+            <button className="btn sm" onClick={() => patchAudioClip(sel.id, { start: now })}>Move to playhead</button>
+            <button className="btn sm" onClick={() => copyTo(now)}>Copy to playhead</button>
+            <button className="btn sm" disabled={!inside} onClick={() => splitAt(now)}>Split at playhead</button>
+          </div>
+          <button className="btn danger sm" onClick={() => removeAudioClip(sel.id)}>Remove this audio</button>
+        </Section>
+      ) : a.clips.length > 0 && <Note>Click an audio block in the timeline to change its volume, move it, copy it to another spot, or split it.</Note>}
+      <Section title="Mix">
+        <Toggle label="Lower added audio under clips that have sound" checked={a.duck} onChange={v => set({ duck: v })} />
       </Section>
       <Section title="Fade in and out">
         <Slider label="Fade in" value={a.fadeIn} min={0} max={5} step={0.25} format={v => v ? v + 's' : 'off'} onChange={v => set({ fadeIn: v }, 'fi')} />

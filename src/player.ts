@@ -1,7 +1,7 @@
-// Preview playback: one <video> element that hops between clips, plus an <audio> for background music.
+// Preview playback: one <video> element that hops between clips, plus an <audio> per added audio clip.
 import { useStore, currentClip, notify } from './store';
 import { probeClip } from './engine/media';
-import { toOutputTime } from './engine/timeline';
+import { clamp, fromOutputTime, toOutputTime } from './engine/timeline';
 import type { Clip } from './types';
 
 export const video = document.createElement('video');
@@ -10,8 +10,8 @@ video.preload = 'auto';
 video.crossOrigin = 'anonymous';
 (video as any).preservesPitch = false; // match the export, where speed changes pitch too
 
-const music = document.createElement('audio');
-let musicUrl: string | null = null;
+const audioEls = new Map<string, HTMLAudioElement>();   // per audio clip
+const sourceUrls = new Map<string, string>();            // per audio source
 let loadedClipId: string | null = null;
 let loadedUrl: string | null = null;
 let pendingSeek: number | null = null;
@@ -39,11 +39,11 @@ export function syncPlayer() {
     video.onloadedmetadata = () => {
       video.currentTime = target;
       applyClipAudio(c);
-      if (autoplay) { autoplay = false; video.play().catch(() => {}); syncMusic(true); }
+      if (autoplay) { autoplay = false; video.play().catch(() => {}); }
     };
   }
   applyClipAudio(c);
-  syncMusicSource();
+  syncAudio();
 
   if (s.playing && !video.paused) {
     if (video.currentTime >= c.trimEnd - 0.03 || video.ended) advance();
@@ -68,13 +68,13 @@ export function play() {
   const c = currentClip();
   if (!c) return;
   if (video.currentTime < c.trimStart - 0.01 || video.currentTime >= c.trimEnd - 0.05) video.currentTime = c.trimStart;
-  video.play().then(() => syncMusic(true)).catch(e => notify('Playback failed: ' + e.message, 'error'));
+  video.play().catch(e => notify('Playback failed: ' + e.message, 'error'));
   useStore.setState({ playing: true });
 }
 
 export function pause() {
   video.pause();
-  music.pause();
+  audioEls.forEach(el => el.pause());
   useStore.setState({ playing: false });
 }
 
@@ -85,7 +85,6 @@ export function seek(t: number) {
   if (!c) return;
   video.currentTime = Math.max(0, Math.min(c.duration, t));
   useStore.setState({ time: video.currentTime });
-  syncMusic(false);
 }
 
 export function stepFrame(dir: 1 | -1) {
@@ -104,32 +103,55 @@ export function selectClip(id: string, at?: number) {
   useStore.setState({ currentClipId: id, time: pendingSeek });
 }
 
-// ---- Music preview, kept roughly in sync with the output timeline ----
-function syncMusicSource() {
-  const m = useStore.getState().doc.audio.music;
-  if (!m) { if (musicUrl) { music.pause(); music.removeAttribute('src'); URL.revokeObjectURL(musicUrl); musicUrl = null; } return; }
-  if (!musicUrl || music.dataset.id !== m.id) {
-    if (musicUrl) URL.revokeObjectURL(musicUrl);
-    musicUrl = URL.createObjectURL(m.file);
-    music.src = musicUrl;
-    music.dataset.id = m.id;
-  }
+/** Where the playhead is on the output timeline. */
+export function outputNow() {
   const s = useStore.getState();
   const c = currentClip(s);
-  const a = s.doc.audio;
-  music.volume = Math.min(1, a.musicVolume * (a.duck && c && c.hasAudio && !c.muted ? 0.35 : 1));
-  music.loop = a.musicLoop;
+  if (!c) return 0;
+  return toOutputTime(s.doc.clips, c, clamp(videoReady() ? video.currentTime : s.time, c.trimStart, c.trimEnd));
 }
 
-function syncMusic(start: boolean) {
+/** Jump to a point on the output timeline, switching clips if needed. */
+export function seekOutput(t: number) {
+  const hit = fromOutputTime(useStore.getState().doc.clips, t);
+  if (hit) selectClip(hit.clip.id, hit.src);
+}
+
+// ---- Added audio preview, kept in sync with the output timeline every frame ----
+function syncAudio() {
   const s = useStore.getState();
-  const m = s.doc.audio.music;
+  const a = s.doc.audio;
+  for (const [id, el] of audioEls) {
+    if (!a.clips.some(x => x.id === id)) { el.pause(); el.removeAttribute('src'); audioEls.delete(id); }
+  }
+  for (const [id, url] of sourceUrls) {
+    if (!a.sources.some(x => x.id === id)) { URL.revokeObjectURL(url); sourceUrls.delete(id); }
+  }
   const c = currentClip(s);
-  if (!m || !c || !musicUrl) return;
-  const mt = toOutputTime(s.doc.clips, c, video.currentTime) - s.doc.audio.musicOffset;
-  if (mt < 0 || (!s.doc.audio.musicLoop && mt >= m.duration)) { music.pause(); return; }
-  music.currentTime = s.doc.audio.musicLoop && m.duration ? mt % m.duration : mt;
-  if (start || s.playing) music.play().catch(() => {});
+  // While the next clip is still loading, leave the audio as it is.
+  const t = c && videoReady() ? toOutputTime(s.doc.clips, c, video.currentTime) : null;
+  const duck = a.duck && c && c.hasAudio && !c.muted ? 0.35 : 1;
+  for (const ac of a.clips) {
+    const src = a.sources.find(x => x.id === ac.sourceId);
+    if (!src) continue;
+    let url = sourceUrls.get(src.id);
+    if (!url) { url = URL.createObjectURL(src.file); sourceUrls.set(src.id, url); }
+    let el = audioEls.get(ac.id);
+    if (!el) { el = new Audio(); el.preload = 'auto'; audioEls.set(ac.id, el); }
+    if (el.src !== url) el.src = url;
+    el.loop = ac.loop;
+    el.volume = Math.min(1, ac.volume * duck);
+    if (t == null) { if (!s.playing) el.pause(); continue; }
+    const local = t - ac.start;
+    let pos = ac.in + local;
+    if (ac.loop && src.duration) pos %= src.duration;
+    const active = s.playing && local >= 0 && local < ac.len && (ac.loop || pos < src.duration);
+    if (!active) { if (!el.paused) el.pause(); continue; }
+    let drift = Math.abs(el.currentTime - pos);
+    if (ac.loop && src.duration) drift = Math.min(drift, src.duration - drift);
+    if (drift > 0.25) el.currentTime = pos;
+    if (el.paused) el.play().catch(() => {});
+  }
 }
 
 // ---- Adding media ----

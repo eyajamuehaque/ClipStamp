@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { useStore, edit, type Tool } from './store';
+import { useStore, edit, removeAudioClip, type Tool } from './store';
 import Stage from './components/Stage';
 import Timeline from './components/Timeline';
 import ClipStrip from './components/ClipStrip';
@@ -85,6 +85,8 @@ export default function App() {
           const { hideId, segId } = s.selectedSeg;
           edit(d => ({ ...d, hides: d.hides.map(h => h.id === hideId ? { ...h, segments: h.segments.filter(x => x.id !== segId) } : h) }));
           useStore.setState({ selectedSeg: null });
+        } else if (s.selectedAudioId) {
+          removeAudioClip(s.selectedAudioId);
         }
       }
     };

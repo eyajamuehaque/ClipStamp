@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Clip, Doc, HideRegion, Overlay } from './types';
+import type { AudioClip, Clip, Doc, HideRegion, Overlay } from './types';
 import { emptyDoc } from './defaults';
 
 export type Tool = 'media' | 'text' | 'logo' | 'remove' | 'adjust' | 'color' | 'audio' | 'export';
@@ -12,6 +12,7 @@ interface UI {
   selectedOverlayId: string | null;
   activeHideId: string | null;
   selectedSeg: { hideId: string; segId: string } | null;
+  selectedAudioId: string | null;
   playing: boolean;
   time: number;              // source time of the current clip
   exporting: boolean;
@@ -41,6 +42,7 @@ export const useStore = create<State>((set, get) => ({
   selectedOverlayId: null,
   activeHideId: null,
   selectedSeg: null,
+  selectedAudioId: null,
   playing: false,
   time: 0,
   exporting: false,
@@ -90,6 +92,7 @@ function fixSelection() {
   if (!s.doc.clips.find(c => c.id === s.currentClipId)) p.currentClipId = s.doc.clips[0]?.id ?? null;
   if (s.selectedOverlayId && !s.doc.overlays.find(o => o.id === s.selectedOverlayId)) p.selectedOverlayId = null;
   if (s.activeHideId && !s.doc.hides.find(h => h.id === s.activeHideId)) { p.activeHideId = null; p.selectedSeg = null; }
+  if (s.selectedAudioId && !s.doc.audio.clips.find(a => a.id === s.selectedAudioId)) p.selectedAudioId = null;
   if (Object.keys(p).length) useStore.setState(p);
 }
 
@@ -104,6 +107,18 @@ export function patchOverlay(id: string, patch: Partial<Overlay>, key?: string) 
 }
 export function patchHide(id: string, patch: Partial<HideRegion>, key?: string) {
   edit(d => ({ ...d, hides: d.hides.map(h => h.id === id ? { ...h, ...patch } : h) }), key);
+}
+export function patchAudioClip(id: string, patch: Partial<AudioClip>, key?: string) {
+  edit(d => ({ ...d, audio: { ...d.audio, clips: d.audio.clips.map(a => a.id === id ? { ...a, ...patch } : a) } }), key);
+}
+/** Remove an audio clip, and its source file too once nothing else plays it. */
+export function removeAudioClip(id: string) {
+  edit(d => {
+    const clips = d.audio.clips.filter(a => a.id !== id);
+    const sources = d.audio.sources.filter(src => clips.some(a => a.sourceId === src.id));
+    return { ...d, audio: { ...d.audio, clips, sources } };
+  });
+  if (useStore.getState().selectedAudioId === id) useStore.setState({ selectedAudioId: null });
 }
 export function patchDoc<K extends keyof Doc>(k: K, patch: Partial<Doc[K]>, key?: string) {
   edit(d => ({ ...d, [k]: { ...(d[k] as object), ...(patch as object) } }), key);

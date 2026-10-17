@@ -86,7 +86,7 @@ export function createRenderer() {
     srcTime: number, outTime: number, total: number,
   ): OverlayBounds[] {
     const rot = rotatedDims(src.w, src.h, clip.rotation);
-    const crop = doc.framing.crop ?? { x: 0, y: 0, w: 1, h: 1 };
+    const crop = clip.crop ?? { x: 0, y: 0, w: 1, h: 1 };
     // Only decode/process as many pixels as the output actually needs.
     const scale = Math.min(1, Math.max(W / (rot.w * crop.w), H / (rot.h * crop.h)) * 1.02);
     const f = drawFrame(src, clip, doc, srcTime, scale);

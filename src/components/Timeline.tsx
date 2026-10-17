@@ -1,6 +1,6 @@
 import { useRef } from 'react';
-import { useStore, useCurrentClip, patchClip, patchHide } from '../store';
-import { togglePlay, seek, stepFrame, pause, video } from '../player';
+import { useStore, useCurrentClip, patchClip, patchHide, patchAudioClip } from '../store';
+import { togglePlay, seek, seekOutput, stepFrame, pause, video } from '../player';
 import { clipOffset, clipOutDur, fmtClock, totalDuration, clamp, outputSize, toOutputTime } from '../engine/timeline';
 import { createRenderer } from '../engine/render';
 import { download } from '../engine/media';
@@ -116,6 +116,7 @@ export default function Timeline() {
         {trimmed && <button className="link" onClick={() => patchClip(clip.id, { trimStart: 0, trimEnd: dur })}>Reset trim</button>}
       </div>
       <HideLayers dur={dur} />
+      <AudioLanes total={total} now={outNow} />
     </div>
   );
 }
@@ -193,6 +194,95 @@ function HideLayers({ dur }: { dur: number }) {
           </div>
         ))}
         <div className="layer-playhead" style={{ left: clamp(time / dur, 0, 1) * 100 + '%' }} />
+      </div>
+    </div>
+  );
+}
+
+/** Pack audio clips into as few rows as possible without overlaps. */
+function packRows<T extends { start: number; len: number }>(items: T[]) {
+  const rows: T[][] = [];
+  for (const it of [...items].sort((a, b) => a.start - b.start)) {
+    const row = rows.find(r => r[r.length - 1].start + r[r.length - 1].len <= it.start + 1e-6);
+    if (row) row.push(it); else rows.push([it]);
+  }
+  return rows;
+}
+
+/** The added audio, laid out over the whole output video. Drag to move, drag the edges to trim. */
+function AudioLanes({ total, now }: { total: number; now: number }) {
+  const audio = useStore(s => s.doc.audio);
+  const selId = useStore(s => s.selectedAudioId);
+  const tool = useStore(s => s.tool);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  if (!audio.clips.length && tool !== 'audio') return null;
+  const span = Math.max(total, 0.1);
+
+  const tAt = (x: number) => {
+    const r = rowsRef.current!.getBoundingClientRect();
+    return clamp((x - r.left) / r.width, 0, 1) * span;
+  };
+
+  const startDrag = (id: string) => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    pause();
+    const side = (e.target as HTMLElement).dataset.side;
+    const ac = useStore.getState().doc.audio.clips.find(x => x.id === id)!;
+    const dur = audio.sources.find(x => x.id === ac.sourceId)?.duration || ac.len;
+    const t0 = tAt(e.clientX), s0 = ac.start, in0 = ac.in, len0 = ac.len;
+    useStore.setState({ selectedAudioId: id, selectedOverlayId: null, selectedSeg: null, tool: 'audio' });
+    const move = (ev: PointerEvent) => {
+      const dt = tAt(ev.clientX) - t0;
+      if (side === 'l') {
+        // Trim the front: the start and the in-point move together.
+        const lo = ac.loop ? 0 : Math.max(0, s0 - in0);
+        const st = clamp(s0 + dt, lo, s0 + len0 - 0.1);
+        let nin = in0 + (st - s0);
+        if (ac.loop) nin = ((nin % dur) + dur) % dur;
+        patchAudioClip(id, { start: st, in: nin, len: len0 - (st - s0) }, 'audio-drag');
+      } else if (side === 'r') {
+        const max = ac.loop ? Math.max(0.1, span - s0) : dur - in0;
+        patchAudioClip(id, { len: clamp(len0 + dt, 0.1, max) }, 'audio-drag');
+      } else {
+        patchAudioClip(id, { start: clamp(s0 + dt, 0, Math.max(0, span - 0.1)) }, 'audio-drag');
+      }
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  const onLane = (e: React.PointerEvent) => {
+    if (e.target !== e.currentTarget) return;
+    pause();
+    seekOutput(tAt(e.clientX));
+    useStore.setState({ selectedAudioId: null });
+  };
+
+  const rows = packRows(audio.clips);
+  return (
+    <div className="layers">
+      <div className="layers-head">Audio — whole video, {fmtClock(total, true)}</div>
+      <div className="layer-rows" ref={rowsRef}>
+        {!rows.length && <div className="layer-row" onPointerDown={onLane}><span className="layer-empty">Add audio in the Audio panel. It lands at the playhead and shows up here.</span></div>}
+        {rows.map((row, i) => (
+          <div key={i} className="layer-row" onPointerDown={onLane}>
+            {row.filter(ac => ac.start < span).map(ac => {
+              const src = audio.sources.find(x => x.id === ac.sourceId);
+              const st = clamp(ac.start, 0, span), en = clamp(ac.start + ac.len, 0, span);
+              return (
+                <div key={ac.id} className={'seg-piece audio-piece' + (ac.id === selId ? ' on' : '')} onPointerDown={startDrag(ac.id)}
+                  style={{ left: st / span * 100 + '%', width: (en - st) / span * 100 + '%' }}
+                  title={`${src?.name ?? 'Audio'}: ${fmtClock(ac.start, true)}–${fmtClock(ac.start + ac.len, true)}${ac.loop ? ' (loops)' : ''}`}>
+                  <span data-side="l" className="seg-h l" />
+                  <span className="seg-label">{ac.loop ? '↻ ' : '♪ '}{src?.name ?? 'Audio'}</span>
+                  <span data-side="r" className="seg-h r" />
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        <div className="layer-playhead" style={{ left: clamp(now / span, 0, 1) * 100 + '%' }} />
       </div>
     </div>
   );
