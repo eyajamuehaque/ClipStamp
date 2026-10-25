@@ -107,7 +107,7 @@ export default function App() {
             <g fill="#1b1f27">{[6, 11, 16, 21, 26].map(x => <rect key={x} x={x - 1.5} y="9" width="3" height="2.4" rx=".6" />)}{[6, 11, 16, 21, 26].map(x => <rect key={'b' + x} x={x - 1.5} y="20.6" width="3" height="2.4" rx=".6" />)}</g>
             <path d="M13 13.2v5.6l5-2.8z" fill="#1b1f27" />
           </svg>
-          <span className="brand-name">Clipsmith</span>
+          <span className="brand-name">ClipStamp</span>
           <span className="brand-tag">Free video editor that runs on your device</span>
         </div>
         <div className="bar-actions">
@@ -120,7 +120,7 @@ export default function App() {
       </header>
 
       {!supported && (
-        <div className="banner">This browser can't encode video. Open Clipsmith in a recent Chrome, Edge or Safari 17+ to export.</div>
+        <div className="banner">This browser can't encode video. Open ClipStamp in a recent Chrome, Edge or Safari 17+ to export.</div>
       )}
 
       <main className="work">

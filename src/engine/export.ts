@@ -62,7 +62,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
     // Name the file after the watermark text when there is one, e.g. "MyBrand.mp4".
     const mark = doc.overlaysEnabled ? doc.overlays.find(o => o.kind === 'text' && o.text.trim()) : undefined;
     const markName = mark?.kind === 'text' ? safeFileName(mark.text) : '';
-    const base = markName || (clips.length > 1 ? 'clipsmith-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
+    const base = markName || (clips.length > 1 ? 'clipstamp-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
 
     try {
       if (fmt === 'gif') {

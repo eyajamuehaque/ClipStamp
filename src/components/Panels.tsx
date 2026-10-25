@@ -105,7 +105,7 @@ export function MediaPanel() {
         <li>Reframe for Reels, Shorts and TikTok with a blurred background</li>
         <li>MP4, WebM, GIF or audio-only export</li>
       </ul>
-      <Note>Nothing is uploaded. Clipsmith edits on your device and keeps working offline once it has loaded.</Note>
+      <Note>Nothing is uploaded. ClipStamp edits on your device and keeps working offline once it has loaded.</Note>
     </Section>
   );
   const set = (p: Parameters<typeof patchClip>[1], key?: string) => patchClip(clip.id, p, key);
@@ -625,10 +625,10 @@ function ProjectSection() {
     <Section title="Project">
       <Note>Your edit and videos are saved in this browser automatically, so a refresh picks up where you left off — even offline.</Note>
       <div className="row-actions">
-        <button className="btn ghost sm" onClick={() => download(new Blob([projectToJson(useStore.getState().doc)], { type: 'application/json' }), 'edit.clipsmith')}>Save settings file</button>
+        <button className="btn ghost sm" onClick={() => download(new Blob([projectToJson(useStore.getState().doc)], { type: 'application/json' }), 'edit.clipstamp')}>Save settings file</button>
         <label className="btn ghost sm">
           Load settings file
-          <input type="file" accept=".clipsmith,.json" hidden onChange={async e => {
+          <input type="file" accept=".clipstamp,.clipsmith,.json" hidden onChange={async e => {
             const f = e.target.files?.[0]; e.target.value = '';
             if (!f) return;
             try {

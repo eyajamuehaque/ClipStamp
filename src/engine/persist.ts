@@ -4,7 +4,7 @@ import type { AudioClip, AudioSettings, AudioSource, Doc } from '../types';
 import { emptyDoc, uid } from '../defaults';
 import { totalDuration } from './timeline';
 
-const DB = 'clipsmith';
+const DB = 'clipsmith'; // kept as-is so autosaved work from before the rename still loads
 const STORE_DOC = 'doc';
 const STORE_FILES = 'files';
 
@@ -118,12 +118,12 @@ export async function clearProject() {
 
 /** Portable settings file (no video data), re-matched to clips by file name + size. */
 export function projectToJson(doc: Doc) {
-  return JSON.stringify({ format: 'clipsmith', version: 1, savedAt: new Date().toISOString(), doc: toStored(doc) }, null, 2);
+  return JSON.stringify({ format: 'clipstamp', version: 1, savedAt: new Date().toISOString(), doc: toStored(doc) }, null, 2);
 }
 
 export function applyProjectJson(current: Doc, text: string): { doc: Doc; matched: number; wanted: number } {
   const data = JSON.parse(text);
-  if (data?.format !== 'clipsmith' || !data.doc) throw new Error('That isn’t a Clipsmith project file.');
+  if (!['clipstamp', 'clipsmith'].includes(data?.format) || !data.doc) throw new Error('That isn’t a ClipStamp project file.');
   const s = data.doc;
   const base = emptyDoc();
   const wanted: any[] = s.clips ?? [];

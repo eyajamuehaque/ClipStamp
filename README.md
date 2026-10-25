@@ -1,4 +1,4 @@
-# Clipsmith
+# ClipStamp
 
 A free video editor that runs entirely in the browser. Videos are never uploaded — decoding, effects and
 encoding all happen on the user's device with WebCodecs. Once loaded, it works offline and can be installed

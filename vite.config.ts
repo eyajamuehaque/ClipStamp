@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Clipsmith — free private video editor',
-        short_name: 'Clipsmith',
+        name: 'ClipStamp — free private video editor',
+        short_name: 'ClipStamp',
         description: 'Trim, merge, add text and logos, remove watermarks, colour grade and export — all on your device.',
         theme_color: '#1b1f27',
         background_color: '#1b1f27',
