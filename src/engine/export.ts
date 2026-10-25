@@ -59,7 +59,10 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
     }
     const wantAudio = opened.some(o => o.audio && !o.clip.muted && o.clip.volume > 0) || sounds.size > 0;
 
-    const base = (clips.length > 1 ? 'clipsmith-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
+    // Name the file after the watermark text when there is one, e.g. "MyBrand.mp4".
+    const mark = doc.overlaysEnabled ? doc.overlays.find(o => o.kind === 'text' && o.text.trim()) : undefined;
+    const markName = mark?.kind === 'text' ? safeFileName(mark.text) : '';
+    const base = markName || (clips.length > 1 ? 'clipsmith-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
 
     try {
       if (fmt === 'gif') {
@@ -269,4 +272,9 @@ async function renderGif(doc: Doc, opened: Opened[], total: number, onProgress: 
   }
   gif.finish();
   return new Blob([gif.bytes() as BlobPart], { type: 'image/gif' });
+}
+
+/** Turn watermark text into something every OS accepts as a file name. */
+function safeFileName(text: string) {
+  return text.replace(/[\\/:*?"<>|\x00-\x1f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '').slice(0, 80);
 }

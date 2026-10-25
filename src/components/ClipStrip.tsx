@@ -32,14 +32,23 @@ export default function ClipStrip() {
     }
   };
 
+  const removeAll = () => {
+    if (!confirm(`Remove all ${clips.length} clips? You can undo this.`)) return;
+    edit(d => ({ ...d, clips: [] }));
+    useStore.setState({ currentClipId: null, playing: false });
+  };
+
   return (
     <div className="strip-wrap">
       <div className="strip-head">
         <span>{clips.length} clip{clips.length > 1 ? 's' : ''} · {fmtClock(total, true)} total</span>
-        <label className="link">
-          Add videos
-          <input type="file" accept="video/*" multiple hidden onChange={e => { addVideoFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
-        </label>
+        <span className="strip-actions">
+          <button className="link" onClick={removeAll}>Remove all</button>
+          <label className="link">
+            Add videos
+            <input type="file" accept="video/*" multiple hidden onChange={e => { addVideoFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
+          </label>
+        </span>
       </div>
       <ol className="strip" aria-label="Clips in play order">
         {clips.map((c, i) => {

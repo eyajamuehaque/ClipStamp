@@ -192,6 +192,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb { background: var(--lead);
 /* ---------- Film strip: the one loud element ---------- */
 .strip-wrap { padding: 4px 16px 16px; }
 .strip-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--dim); padding: 4px 0 6px; }
+.strip-actions { display: flex; gap: 14px; }
 .strip { list-style: none; margin: 0; padding: 14px 10px; display: flex; gap: 0; overflow-x: auto; background:
   radial-gradient(circle at 7px 7px, var(--ink) 3.2px, transparent 3.6px) 0 0 / 18px 100% repeat-x,
   radial-gradient(circle at 7px calc(100% - 7px), var(--ink) 3.2px, transparent 3.6px) 0 0 / 18px 100% repeat-x,
