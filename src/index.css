@@ -135,6 +135,9 @@ input[type=range]:focus-visible::-webkit-slider-thumb { background: var(--lead);
 .progress { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--dim); }
 .progress .bar { height: 6px; background: var(--ink); border-radius: 3px; overflow: hidden; padding: 0; border: 0; }
 .progress .bar i { display: block; height: 100%; background: var(--lead); transition: width .2s linear; }
+.export-pill { position: relative; overflow: hidden; min-width: 128px; font-variant-numeric: tabular-nums; }
+.export-pill i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--lead); opacity: .35; transition: width .2s linear; }
+.export-pill span { position: relative; }
 .result { border: 1px solid var(--lead); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .result p { margin: 0; font-size: 13px; color: var(--dim); word-break: break-word; }
 .result b { color: var(--text); }

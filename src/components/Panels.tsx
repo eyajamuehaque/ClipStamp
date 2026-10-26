@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useStore, useCurrentClip, patchClip, patchOverlay, patchHide, patchDoc, patchAudioClip, removeAudioClip, edit, notify } from '../store';
 import { Section, Slider, Seg, Toggle, Field, ColorInput, Note } from './ui';
 import { FONTS, COLOR_PRESETS, DEFAULT_COLOR, newText, newImage, newHide, uid, emptyDoc } from '../defaults';
@@ -531,35 +530,44 @@ export function AudioPanel() {
 // ================= Export + project =================
 let job: ExportJob | null = null;
 
+export function cancelExport() { job?.cancel(); }
+
+async function runExport() {
+  const old = useStore.getState().exportResult;
+  if (old) URL.revokeObjectURL(old.url);
+  useStore.setState({ exporting: true, exportResult: null, exportProgress: { p: 0, msg: 'Starting…' } });
+  const t0 = performance.now();
+  // Progress fires every frame; re-rendering the UI that often steals time from encoding.
+  let last = 0;
+  job = startExport(useStore.getState().doc, (p, msg) => {
+    const now = performance.now();
+    if (now - last < 250 && p < 0.99) return;
+    last = now;
+    useStore.setState({ exportProgress: { p, msg } });
+  });
+  try {
+    const r = await job.done;
+    useStore.setState({ exportResult: { url: URL.createObjectURL(r.blob), name: r.name, size: r.blob.size, note: r.note, secs: (performance.now() - t0) / 1000 } });
+    notify('Export finished.');
+  } catch (e: any) {
+    if (e instanceof ExportCanceled) notify('Export canceled.');
+    else { console.error(e); notify('Export failed: ' + (e?.message ?? e), 'error'); }
+  } finally {
+    job = null;
+    useStore.setState({ exporting: false, exportProgress: null });
+  }
+}
+
 export function ExportPanel() {
   const o = useStore(s => s.doc.output);
   const doc = useStore(s => s.doc);
   const exporting = useStore(s => s.exporting);
-  const [prog, setProg] = useState<{ p: number; msg: string } | null>(null);
-  const [result, setResult] = useState<{ url: string; name: string; size: number; note: string; secs: number } | null>(null);
+  const prog = useStore(s => s.exportProgress);
+  const result = useStore(s => s.exportResult);
   const set = (p: Partial<typeof o>, key?: string) => patchDoc('output', p, key);
   const size = exportSize(doc);
   const total = totalDuration(doc.clips);
-
-  const run = async () => {
-    if (result) URL.revokeObjectURL(result.url);
-    setResult(null);
-    useStore.setState({ exporting: true });
-    const t0 = performance.now();
-    job = startExport(useStore.getState().doc, (p, msg) => setProg({ p, msg }));
-    try {
-      const r = await job.done;
-      setResult({ url: URL.createObjectURL(r.blob), name: r.name, size: r.blob.size, note: r.note, secs: (performance.now() - t0) / 1000 });
-      notify('Export finished.');
-    } catch (e: any) {
-      if (e instanceof ExportCanceled) notify('Export canceled.');
-      else { console.error(e); notify('Export failed: ' + (e?.message ?? e), 'error'); }
-    } finally {
-      job = null;
-      setProg(null);
-      useStore.setState({ exporting: false });
-    }
-  };
+  const run = runExport;
 
   const fmtOptions: { value: ExportFormat; label: string; title: string }[] = [
     { value: 'mp4', label: 'MP4', title: 'Plays everywhere' },
@@ -603,11 +611,11 @@ export function ExportPanel() {
         {o.format === 'wav' && <Note>Exports the mixed sound (clips + music + fades) as an uncompressed WAV.</Note>}
         {!exporting
           ? <button className="btn primary big" disabled={!doc.clips.length} onClick={run}>Export {o.format === 'wav' ? 'audio' : o.format.toUpperCase()}</button>
-          : <button className="btn danger big" onClick={() => job?.cancel()}>Cancel export</button>}
+          : <button className="btn danger big" onClick={cancelExport}>Cancel export</button>}
         {prog && (
           <div className="progress" role="progressbar" aria-valuenow={Math.round(prog.p * 100)} aria-valuemin={0} aria-valuemax={100}>
             <div className="bar"><i style={{ width: prog.p * 100 + '%' }} /></div>
-            <span>{prog.msg}</span>
+            <span>{Math.round(prog.p * 100)}% · {prog.msg}</span>
           </div>
         )}
         {result && (

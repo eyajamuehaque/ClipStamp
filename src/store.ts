@@ -16,6 +16,9 @@ interface UI {
   playing: boolean;
   time: number;              // source time of the current clip
   exporting: boolean;
+  // Kept here, not in the Export panel, so switching tools mid-export loses nothing.
+  exportProgress: { p: number; msg: string } | null;
+  exportResult: { url: string; name: string; size: number; note: string; secs: number } | null;
   notice: { text: string; kind: 'info' | 'error' } | null;
 }
 
@@ -46,6 +49,8 @@ export const useStore = create<State>((set, get) => ({
   playing: false,
   time: 0,
   exporting: false,
+  exportProgress: null,
+  exportResult: null,
   notice: null,
 
   doc: emptyDoc(),

@@ -27,6 +27,8 @@ export default function App() {
   const notice = useStore(s => s.notice);
   const canUndo = useStore(s => s.past.length > 0);
   const canRedo = useStore(s => s.future.length > 0);
+  const exportPct = useStore(s => s.exportProgress ? Math.round(s.exportProgress.p * 100) : null);
+  const exportReady = useStore(s => !!s.exportResult);
   const [restoring, setRestoring] = useState(true);
   const [install, setInstall] = useState<InstallEvent | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
@@ -94,6 +96,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Show export progress in the browser tab title too, so it's visible from other tabs.
+  useEffect(() => {
+    const base = 'ClipStamp — free private video editor';
+    document.title = exportPct !== null ? `${exportPct}% exporting · ClipStamp` : base;
+  }, [exportPct]);
+
   const Panel = TOOLS.find(t => t.id === tool)!.panel;
 
   return (
@@ -115,7 +123,14 @@ export default function App() {
           <button className="icon-btn" onClick={() => useStore.getState().redo()} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">{I('M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3')}</button>
           <span className={'status ' + (online ? '' : 'off')} title="Editing never needs a connection">{online ? 'Private · files stay here' : 'Offline · still works'}</span>
           {install && <button className="btn sm" onClick={async () => { await install.prompt(); setInstall(null); }}>Install app</button>}
-          <button className="btn primary sm" onClick={() => useStore.setState({ tool: 'export' })}>Export</button>
+          {exportPct !== null ? (
+            <button className="btn sm export-pill" onClick={() => useStore.setState({ tool: 'export' })} title="Show export"
+              role="progressbar" aria-valuenow={exportPct} aria-valuemin={0} aria-valuemax={100}>
+              <i style={{ width: exportPct + '%' }} /><span>Exporting {exportPct}%</span>
+            </button>
+          ) : (
+            <button className="btn primary sm" onClick={() => useStore.setState({ tool: 'export' })}>{exportReady && tool !== 'export' ? 'Export ready ↓' : 'Export'}</button>
+          )}
         </div>
       </header>
 

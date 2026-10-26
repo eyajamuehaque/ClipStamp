@@ -11,6 +11,7 @@ import { createRenderer, preloadFonts, preloadImages } from './render';
 import { clipOutDur, exportSize, outputSize, totalDuration } from './timeline';
 
 export class ExportCanceled extends Error { constructor() { super('Export canceled.'); this.name = 'ExportCanceled'; } }
+class Overshoot extends Error { actual: number; constructor(actual: number) { super('Bitrate overshoot'); this.actual = actual; } }
 
 export interface ExportJob {
   cancel(): void;
@@ -89,14 +90,21 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
           : await getFirstEncodableAudioCodec(fmt === 'webm' ? ['opus', 'vorbis'] : ['aac', 'opus'], { numberOfChannels: 2, sampleRate: SR });
       }
 
-      let result = await encodeOnce(plan?.quality ?? null, '');
       // Browser encoders (especially GPU ones on Windows) can blow far past a variable
-      // bitrate target. If that happened, redo it at a corrected, constant bitrate.
-      if (plan?.bps && result.videoBytes * 8 / total > plan.bps * 1.1) {
-        const actual = result.videoBytes * 8 / total;
-        const bitrate = Math.max(300_000, Math.round(plan.bps * (plan.bps / actual) * 0.95));
-        result = await encodeOnce(new Quality({ bitrate, bitrateMode: 'constant' }), 'Shrinking to size — ');
+      // bitrate target. The first pass watches its running bitrate and bails out early
+      // when it's clearly overshooting; then we redo it at a corrected, constant bitrate.
+      const redo = (actual: number) => {
+        const bitrate = Math.max(300_000, Math.round(plan!.bps! * (plan!.bps! / actual) * 0.95));
+        return encodeOnce(new Quality({ bitrate, bitrateMode: 'constant' }), 'Adjusting for size — ', 0);
+      };
+      let result;
+      try {
+        result = await encodeOnce(plan?.quality ?? null, '', plan?.bps ?? 0);
+      } catch (e) {
+        if (!(e instanceof Overshoot)) throw e;
+        result = await redo(e.actual);
       }
+      if (plan?.bps && result.videoBytes * 8 / total > plan.bps * 1.1) result = await redo(result.videoBytes * 8 / total);
 
       const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
       const blob = new Blob([result.buffer], { type: mime });
@@ -113,7 +121,8 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       opened.forEach(o => o.input.dispose());
     }
 
-    async function encodeOnce(quality: Quality | null, prefix: string) {
+    /** `watchBps`: when > 0, throw Overshoot early if the running bitrate is well past it. */
+    async function encodeOnce(quality: Quality | null, prefix: string, watchBps: number) {
       const target = new BufferTarget();
       output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
 
@@ -142,6 +151,9 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       const renderer = createRenderer();
       const ctx = canvas?.getContext('2d', { alpha: false }) ?? null;
       const cap = doc.output.fps || 60;
+      // Judge after enough video that the first keyframe doesn't skew the average.
+      const watchAt = Math.min(total * 0.6, Math.max(6, total * 0.12));
+      let watched = !watchBps || total < 8;
       let offset = 0;
       for (let i = 0; i < opened.length; i++) {
         check();
@@ -160,6 +172,14 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
               renderer.render(ctx, size.w, size.h, src, o.clip, doc, sample.timestamp, outTs, total);
               const dur = Math.max(1 / 240, Math.min(sample.duration, o.clip.trimEnd - sample.timestamp) / o.clip.speed);
               await videoSource.add(outTs, dur);
+              if (!watched && outTs >= watchAt) {
+                watched = true;
+                const running = videoBytes * 8 / outTs;
+                if (running > watchBps * 1.3) {
+                  await output.cancel();
+                  throw new Overshoot(running);
+                }
+              }
               const p = Math.min(0.99, (outTs - 0) / total);
               onProgress(p, `${label} — ${Math.round(p * 100)}%`);
             } finally { sample.close(); }
