@@ -79,11 +79,15 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       let vcodec: VideoCodec | null = null;
       if (fmt !== 'wav') {
         size = outputSize(doc);
-        const candidates: VideoCodec[] = fmt === 'webm' ? ['vp9', 'vp8', 'av1'] : ['avc', 'hevc', 'vp9', 'av1'];
+        const candidates: VideoCodec[] = doc.output.compact
+          ? (fmt === 'webm' ? ['av1', 'vp9', 'vp8'] : ['av1', 'hevc', 'vp9', 'avc'])
+          : (fmt === 'webm' ? ['vp9', 'vp8', 'av1'] : ['avc', 'hevc', 'vp9', 'av1']);
         vcodec = await getFirstEncodableVideoCodec(candidates, { width: size.w, height: size.h });
         if (!vcodec) throw new Error(`This browser can't encode ${size.w}×${size.h} video. Try a lower export resolution, or use Chrome/Edge.`);
         canvas = new OffscreenCanvas(size.w, size.h);
-        videoSource = new CanvasSource(canvas, { codec: vcodec, quality: pickQuality(doc, total), keyFrameInterval: 2 });
+        const quality = await pickQuality(doc, total, opened, vcodec);
+        // Keyframes are the most expensive frames; 5 s apart still seeks fine.
+        videoSource = new CanvasSource(canvas, { codec: vcodec, quality, keyFrameInterval: 5 });
         output.addVideoTrack(videoSource, { frameRate: doc.output.fps || 30 });
       }
 
@@ -156,17 +160,35 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
   return { cancel: () => { cancelled = true; }, done };
 }
 
-function pickQuality(doc: Doc, total: number): Quality {
+// Rough bits needed for the same picture quality, relative to H.264.
+const CODEC_COST: Partial<Record<VideoCodec, number>> = { avc: 1, hevc: 0.7, vp9: 0.75, av1: 0.6, vp8: 1.1 };
+
+async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec): Promise<Quality> {
   const q = doc.output.quality;
   if (q === 'high') return QUALITY_HIGH;
   if (q === 'medium') return QUALITY_MEDIUM;
   if (q === 'small') return QUALITY_LOW;
   if (q === 'custom') return new Quality({ bitrate: Math.round(doc.output.customMbps * 1e6) });
-  // 'match': aim for roughly the same bits per second as the source files,
-  // so the export doesn't balloon past the originals.
-  const bits = doc.clips.reduce((s, c) => s + c.size * 8, 0);
-  const secs = doc.clips.reduce((s, c) => s + c.duration, 0) || total;
-  const bps = Math.max(600_000, bits / secs * 0.95 - 128_000);
+  // 'match': aim for the source's bits per second, adjusted for fewer frames
+  // and a more efficient codec, so the export doesn't balloon past the originals.
+  const outCost = CODEC_COST[vcodec] ?? 1;
+  let bits = 0, secs = 0;
+  for (const o of opened) {
+    let scale = 1;
+    const fps = doc.output.fps;
+    if (fps) {
+      try {
+        const srcFps = (await o.video.computePacketStats(120)).averagePacketRate;
+        if (srcFps > fps) scale *= fps / srcFps;
+      } catch { /* keep scale */ }
+    }
+    const srcCodec = await o.video.getCodec().catch(() => null);
+    scale *= Math.min(1, outCost / ((srcCodec && CODEC_COST[srcCodec]) ?? 1));
+    bits += o.clip.size * 8 * scale;
+    secs += o.clip.duration;
+  }
+  // Browser encoders overshoot their target, so aim a bit under.
+  const bps = Math.max(600_000, bits / (secs || total) * 0.85 - 128_000);
   return new Quality({ bitrate: Math.round(bps) });
 }
 

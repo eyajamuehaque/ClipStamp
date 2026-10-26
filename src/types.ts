@@ -141,6 +141,7 @@ export interface OutputSettings {
   quality: QualityMode;
   customMbps: number;
   fps: number;          // 0 = keep source
+  compact: boolean;     // prefer AV1/HEVC/VP9 for a smaller file (slower, less compatible)
   gifWidth: number;
   gifFps: number;
 }

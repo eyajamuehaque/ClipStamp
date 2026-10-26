@@ -69,6 +69,6 @@ export function emptyDoc(): Doc {
     color: { ...DEFAULT_COLOR },
     framing: { flipH: false, flipV: false, aspect: 'source', bg: 'blur', bgColor: '#101418' },
     audio: { sources: [], clips: [], duck: true, fadeIn: 0, fadeOut: 0, videoFade: true },
-    output: { format: 'mp4', resolution: 0, quality: 'match', customMbps: 8, fps: 0, gifWidth: 480, gifFps: 12 },
+    output: { format: 'mp4', resolution: 0, quality: 'match', customMbps: 8, fps: 0, compact: false, gifWidth: 480, gifFps: 12 },
   };
 }

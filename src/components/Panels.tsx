@@ -588,6 +588,8 @@ export function ExportPanel() {
             </Field>
             {o.quality === 'custom' && <Slider label="Bitrate" value={o.customMbps} min={1} max={60} format={v => v + ' Mbps'} onChange={v => set({ customMbps: v }, 'mbps')} />}
             <Seg label="Frame rate" value={o.fps} onChange={v => set({ fps: v })} options={[{ value: 0, label: 'Source' }, { value: 24, label: '24' }, { value: 30, label: '30' }, { value: 60, label: '60' }]} />
+            <Seg label="Encoding" value={o.compact ? 1 : 0} onChange={v => set({ compact: v === 1 })} options={[{ value: 0, label: 'Most compatible' }, { value: 1, label: 'Smallest file (slower)' }]} />
+            {o.compact && <Note>Uses AV1, HEVC or VP9 when your browser can. Files are much smaller, but some older devices and editors can't play them.</Note>}
             <Note>{size.w}×{size.h}, {fmtClock(total, true)} long. No watermark, no length limit.</Note>
           </>
         )}
