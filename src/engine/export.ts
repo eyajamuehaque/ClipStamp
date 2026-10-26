@@ -9,9 +9,9 @@ import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import type { Clip, Doc } from '../types';
 import { createRenderer, preloadFonts, preloadImages } from './render';
 import { clipOutDur, exportSize, outputSize, totalDuration } from './timeline';
+import { RateControlledVideo } from './ratecontrol';
 
 export class ExportCanceled extends Error { constructor() { super('Export canceled.'); this.name = 'ExportCanceled'; } }
-class Overshoot extends Error { actual: number; constructor(actual: number) { super('Bitrate overshoot'); this.actual = actual; } }
 
 export interface ExportJob {
   cancel(): void;
@@ -19,6 +19,7 @@ export interface ExportJob {
 }
 
 const SR = 48000;
+const AUDIO_BPS = 128_000;
 const WIN = 30; // seconds of audio rendered per chunk (keeps memory flat on long videos)
 
 interface Opened { clip: Clip; input: Input; video: InputVideoTrack; audio: InputAudioTrack | null }
@@ -68,13 +69,14 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
     let size = { w: 0, h: 0 };
     let vcodec: VideoCodec | null = null;
     let acodec: AudioCodec | null = null;
+    let plan: { quality: Quality; bps: number | null } | null = null;
+    let rateControl: RateControlledVideo | null = null;
     try {
       if (fmt === 'gif') {
         const blob = await renderGif(doc, opened, total, onProgress, check);
         return { blob, name: base + '.gif', note: `Animated GIF, ${doc.output.gifWidth}px wide at ${doc.output.gifFps} fps.` };
       }
 
-      let plan: { quality: Quality; bps: number | null } | null = null;
       if (fmt !== 'wav') {
         size = exportSize(doc);
         const candidates: VideoCodec[] = doc.output.compact
@@ -90,21 +92,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
           : await getFirstEncodableAudioCodec(fmt === 'webm' ? ['opus', 'vorbis'] : ['aac', 'opus'], { numberOfChannels: 2, sampleRate: SR });
       }
 
-      // Browser encoders (especially GPU ones on Windows) can blow far past a variable
-      // bitrate target. The first pass watches its running bitrate and bails out early
-      // when it's clearly overshooting; then we redo it at a corrected, constant bitrate.
-      const redo = (actual: number) => {
-        const bitrate = Math.max(300_000, Math.round(plan!.bps! * (plan!.bps! / actual) * 0.95));
-        return encodeOnce(new Quality({ bitrate, bitrateMode: 'constant' }), 'Adjusting for size — ', 0);
-      };
-      let result;
-      try {
-        result = await encodeOnce(plan?.quality ?? null, '', plan?.bps ?? 0);
-      } catch (e) {
-        if (!(e instanceof Overshoot)) throw e;
-        result = await redo(e.actual);
-      }
-      if (plan?.bps && result.videoBytes * 8 / total > plan.bps * 1.1) result = await redo(result.videoBytes * 8 / total);
+      const result = await encodeOnce(plan?.quality ?? null);
 
       const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
       const blob = new Blob([result.buffer], { type: mime });
@@ -114,6 +102,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
         : `${size.w}×${size.h}, ${(vcodec ?? '').toUpperCase()}${acodec ? ' + ' + acodec.toUpperCase() : ', no audio'}.`;
       return { blob, name: base + ext, note };
     } catch (e) {
+      (rateControl as RateControlledVideo | null)?.cancel();
       const out = output as Output | null; // assigned inside encodeOnce, which TS can't see
       if (out && out.state !== 'finalized') { try { await out.cancel(); } catch { /* ignore */ } }
       throw e;
@@ -121,44 +110,49 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       opened.forEach(o => o.input.dispose());
     }
 
-    /** `watchBps`: when > 0, throw Overshoot early if the running bitrate is well past it. */
-    async function encodeOnce(quality: Quality | null, prefix: string, watchBps: number) {
+    async function encodeOnce(quality: Quality | null) {
       const target = new BufferTarget();
       output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
 
-      let videoBytes = 0;
-      let videoSource: CanvasSource | null = null;
+      let videoSource: { add(ts: number, dur: number): Promise<void>; close(): Promise<void> } | null = null;
       let canvas: OffscreenCanvas | null = null;
       if (vcodec && quality) {
-        canvas = new OffscreenCanvas(size.w, size.h);
-        // Keyframes are the most expensive frames; 5 s apart still seeks fine.
-        videoSource = new CanvasSource(canvas, {
-          codec: vcodec, quality, keyFrameInterval: 5,
-          onEncodedPacket: packet => { videoBytes += packet.data.byteLength; },
-        });
-        output.addVideoTrack(videoSource, { frameRate: doc.output.fps || 30 });
+        const cv = canvas = new OffscreenCanvas(size.w, size.h);
+        const frameRate = doc.output.fps || 30;
+        // Size-capped modes: variable bitrate steered onto the budget, so fast motion keeps its detail.
+        const rc = plan?.bps ? new RateControlledVideo(vcodec, size.w, size.h, frameRate, plan.bps, total) : null;
+        if (rc && await rc.init()) {
+          output.addVideoTrack(rc.source, { frameRate });
+          rateControl = rc;
+          videoSource = { add: (ts, dur) => rc.add(cv, ts, dur), close: () => rc.finish() };
+        } else {
+          // Keyframes are the most expensive frames; 5 s apart still seeks fine.
+          const cs = new CanvasSource(cv, { codec: vcodec, quality, keyFrameInterval: 5 });
+          output.addVideoTrack(cs, { frameRate });
+          videoSource = { add: (ts, dur) => cs.add(ts, dur), close: async () => cs.close() };
+        }
       }
 
       let audioSource: AudioBufferSource | null = null;
       if (acodec) {
-        audioSource = new AudioBufferSource(fmt === 'wav' ? { codec: acodec } : { codec: acodec, quality: QUALITY_HIGH });
+        // In the size-capped modes audio gets exactly the 128 kbps the video budget leaves for it.
+        const aq = plan?.bps ? new Quality({ bitrate: AUDIO_BPS, bitrateMode: 'constant' }) : QUALITY_HIGH;
+        audioSource = new AudioBufferSource(fmt === 'wav' ? { codec: acodec } : { codec: acodec, quality: aq });
         output.addAudioTrack(audioSource);
       }
 
       await output.start();
+      rateControl?.start();
 
       // Video and audio are written clip by clip, so they stay in sync.
       const renderer = createRenderer();
       const ctx = canvas?.getContext('2d', { alpha: false }) ?? null;
       const cap = doc.output.fps || 60;
-      // Judge after enough video that the first keyframe doesn't skew the average.
-      const watchAt = Math.min(total * 0.6, Math.max(6, total * 0.12));
-      let watched = !watchBps || total < 8;
       let offset = 0;
       for (let i = 0; i < opened.length; i++) {
         check();
         const o = opened[i];
-        const label = prefix + (opened.length > 1 ? `Clip ${i + 1} of ${opened.length}` : 'Encoding');
+        const label = opened.length > 1 ? `Clip ${i + 1} of ${opened.length}` : 'Encoding';
         if (videoSource && ctx) {
           let nextEmit = -Infinity;
           const sink = new VideoSampleSink(o.video);
@@ -172,14 +166,6 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
               renderer.render(ctx, size.w, size.h, src, o.clip, doc, sample.timestamp, outTs, total);
               const dur = Math.max(1 / 240, Math.min(sample.duration, o.clip.trimEnd - sample.timestamp) / o.clip.speed);
               await videoSource.add(outTs, dur);
-              if (!watched && outTs >= watchAt) {
-                watched = true;
-                const running = videoBytes * 8 / outTs;
-                if (running > watchBps * 1.3) {
-                  await output.cancel();
-                  throw new Overshoot(running);
-                }
-              }
               const p = Math.min(0.99, (outTs - 0) / total);
               onProgress(p, `${label} — ${Math.round(p * 100)}%`);
             } finally { sample.close(); }
@@ -192,11 +178,12 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
         offset += clipOutDur(o.clip);
       }
 
-      videoSource?.close();
+      onProgress(0.99, 'Finishing video…');
+      await videoSource?.close();
       audioSource?.close();
       onProgress(0.995, 'Finishing file…');
       await output.finalize();
-      return { buffer: target.buffer!, videoBytes };
+      return { buffer: target.buffer! };
     }
   })();
 
@@ -214,7 +201,7 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
   if (q === 'small') return { quality: QUALITY_LOW, bps: null };
   if (q === 'custom') {
     const bps = Math.round(doc.output.customMbps * 1e6);
-    return { quality: new Quality({ bitrate: bps }), bps };
+    return { quality: new Quality({ bitrate: bps, bitrateMode: 'constant' }), bps };
   }
   // 'match': aim for the source's bits per second, adjusted for fewer frames
   // and a more efficient codec, so the export doesn't balloon past the originals.
@@ -234,9 +221,10 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
     bits += o.clip.size * 8 * scale;
     secs += o.clip.duration;
   }
-  // Browser encoders overshoot their target, so aim a bit under.
-  const bps = Math.round(Math.max(300_000, bits / (secs || total) * 0.85 - 128_000));
-  return { quality: new Quality({ bitrate: bps }), bps };
+  // Constant bitrate: browser encoders badly overshoot a variable target, but hold a
+  // constant one, so the file lands at (or just under) the original in a single pass.
+  const bps = Math.round(Math.max(300_000, bits / (secs || total) * 0.9 - AUDIO_BPS));
+  return { quality: new Quality({ bitrate: bps, bitrateMode: 'constant' }), bps };
 }
 
 async function mixClipAudio(
