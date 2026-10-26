@@ -3,7 +3,7 @@ import { useStore, useCurrentClip, patchClip, patchOverlay, patchHide, patchDoc,
 import { Section, Slider, Seg, Toggle, Field, ColorInput, Note } from './ui';
 import { FONTS, COLOR_PRESETS, DEFAULT_COLOR, newText, newImage, newHide, uid, emptyDoc } from '../defaults';
 import { readImage, probeAudio, download } from '../engine/media';
-import { clipOutDur, fmtClock, fmtBytes, outputSize, totalDuration, clamp } from '../engine/timeline';
+import { clipOutDur, exportSize, fmtClock, fmtBytes, outputSize, totalDuration, clamp } from '../engine/timeline';
 import { startExport, ExportCanceled, type ExportJob } from '../engine/export';
 import { projectToJson, applyProjectJson, clearProject } from '../engine/persist';
 import { addVideoFiles, video, seek, outputNow } from '../player';
@@ -538,7 +538,7 @@ export function ExportPanel() {
   const [prog, setProg] = useState<{ p: number; msg: string } | null>(null);
   const [result, setResult] = useState<{ url: string; name: string; size: number; note: string; secs: number } | null>(null);
   const set = (p: Partial<typeof o>, key?: string) => patchDoc('output', p, key);
-  const size = outputSize(doc);
+  const size = exportSize(doc);
   const total = totalDuration(doc.clips);
 
   const run = async () => {

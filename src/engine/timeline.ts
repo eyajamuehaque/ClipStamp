@@ -60,6 +60,19 @@ export function outputSize(doc: Doc, resolution = doc.output.resolution) {
   return { w: even(w), h: even(h) };
 }
 
+/**
+ * The size a video export is rendered at. Overlays drawn at a tiny source size look soft,
+ * so with "Same as source" they're rendered at 720p at least. Only in the size-capped
+ * quality modes, where the bitrate stays the same and so does the file size.
+ */
+export function exportSize(doc: Doc) {
+  const s = outputSize(doc);
+  const capped = doc.output.quality === 'match' || doc.output.quality === 'custom';
+  const hasOverlay = doc.overlaysEnabled && doc.overlays.length > 0;
+  if (!doc.output.resolution && capped && hasOverlay && Math.min(s.w, s.h) < 720) return outputSize(doc, 720);
+  return s;
+}
+
 export function fmtClock(sec: number, tenths = false) {
   sec = Math.max(0, sec || 0);
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;

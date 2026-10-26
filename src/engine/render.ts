@@ -208,7 +208,9 @@ function drawText(ctx: Ctx2D, o: TextOverlay, W: number, H: number, t: number): 
 
   const e = entranceState(o.entrance, t, o.start);
   const cx = x * W, cy = y * H + e.shift * px * 0.9;
-  ctx.translate(cx, cy);
+  // Whole-pixel positions keep edges crisp, and moving text shifts by exact pixels,
+  // which the encoder can copy between frames instead of re-coding it blurrily.
+  ctx.translate(Math.round(cx), Math.round(cy));
   ctx.rotate(rad);
   ctx.scale(e.scale, e.scale);
   ctx.globalAlpha = (o.opacity / 100) * e.alpha;
@@ -247,11 +249,14 @@ function drawImage(ctx: Ctx2D, o: ImageOverlay, W: number, H: number, t: number)
   const cx = o.x * W, cy = o.y * H + e.shift * h * 0.3, rad = o.rotation * Math.PI / 180;
   if (img) {
     ctx.save();
-    ctx.translate(cx, cy);
+    ctx.translate(Math.round(cx), Math.round(cy));
     ctx.rotate(rad);
     ctx.scale(e.scale, e.scale);
     ctx.globalAlpha = (o.opacity / 100) * e.alpha;
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const rw = Math.round(w), rh = Math.round(h);
+    ctx.drawImage(img, -Math.round(rw / 2), -Math.round(rh / 2), rw, rh);
     ctx.restore();
   }
   return { id: o.id, cx, cy, w, h, rot: rad };

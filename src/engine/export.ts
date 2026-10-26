@@ -8,7 +8,7 @@ import {
 import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import type { Clip, Doc } from '../types';
 import { createRenderer, preloadFonts, preloadImages } from './render';
-import { clipOutDur, outputSize, totalDuration } from './timeline';
+import { clipOutDur, exportSize, outputSize, totalDuration } from './timeline';
 
 export class ExportCanceled extends Error { constructor() { super('Export canceled.'); this.name = 'ExportCanceled'; } }
 
@@ -64,42 +64,76 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
     const markName = mark?.kind === 'text' ? safeFileName(mark.text) : '';
     const base = markName || (clips.length > 1 ? 'clipstamp-edit' : clips[0].name.replace(/\.[^.]+$/, '') + '-edited');
 
+    let size = { w: 0, h: 0 };
+    let vcodec: VideoCodec | null = null;
+    let acodec: AudioCodec | null = null;
     try {
       if (fmt === 'gif') {
         const blob = await renderGif(doc, opened, total, onProgress, check);
         return { blob, name: base + '.gif', note: `Animated GIF, ${doc.output.gifWidth}px wide at ${doc.output.gifFps} fps.` };
       }
 
-      const target = new BufferTarget();
-      output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
-
-      let videoSource: CanvasSource | null = null;
-      let canvas: OffscreenCanvas | null = null;
-      let size = { w: 0, h: 0 };
-      let vcodec: VideoCodec | null = null;
+      let plan: { quality: Quality; bps: number | null } | null = null;
       if (fmt !== 'wav') {
-        size = outputSize(doc);
+        size = exportSize(doc);
         const candidates: VideoCodec[] = doc.output.compact
           ? (fmt === 'webm' ? ['av1', 'vp9', 'vp8'] : ['av1', 'hevc', 'vp9', 'avc'])
           : (fmt === 'webm' ? ['vp9', 'vp8', 'av1'] : ['avc', 'hevc', 'vp9', 'av1']);
         vcodec = await getFirstEncodableVideoCodec(candidates, { width: size.w, height: size.h });
         if (!vcodec) throw new Error(`This browser can't encode ${size.w}×${size.h} video. Try a lower export resolution, or use Chrome/Edge.`);
+        plan = await pickQuality(doc, total, opened, vcodec);
+      }
+
+      if (wantAudio || fmt === 'wav') {
+        acodec = fmt === 'wav' ? 'pcm-s16'
+          : await getFirstEncodableAudioCodec(fmt === 'webm' ? ['opus', 'vorbis'] : ['aac', 'opus'], { numberOfChannels: 2, sampleRate: SR });
+      }
+
+      let result = await encodeOnce(plan?.quality ?? null, '');
+      // Browser encoders (especially GPU ones on Windows) can blow far past a variable
+      // bitrate target. If that happened, redo it at a corrected, constant bitrate.
+      if (plan?.bps && result.videoBytes * 8 / total > plan.bps * 1.1) {
+        const actual = result.videoBytes * 8 / total;
+        const bitrate = Math.max(300_000, Math.round(plan.bps * (plan.bps / actual) * 0.95));
+        result = await encodeOnce(new Quality({ bitrate, bitrateMode: 'constant' }), 'Shrinking to size — ');
+      }
+
+      const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
+      const blob = new Blob([result.buffer], { type: mime });
+      const ext = fmt === 'webm' ? '.webm' : fmt === 'wav' ? '.wav' : '.mp4';
+      const note = fmt === 'wav'
+        ? 'Audio only, uncompressed WAV.'
+        : `${size.w}×${size.h}, ${(vcodec ?? '').toUpperCase()}${acodec ? ' + ' + acodec.toUpperCase() : ', no audio'}.`;
+      return { blob, name: base + ext, note };
+    } catch (e) {
+      const out = output as Output | null; // assigned inside encodeOnce, which TS can't see
+      if (out && out.state !== 'finalized') { try { await out.cancel(); } catch { /* ignore */ } }
+      throw e;
+    } finally {
+      opened.forEach(o => o.input.dispose());
+    }
+
+    async function encodeOnce(quality: Quality | null, prefix: string) {
+      const target = new BufferTarget();
+      output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+
+      let videoBytes = 0;
+      let videoSource: CanvasSource | null = null;
+      let canvas: OffscreenCanvas | null = null;
+      if (vcodec && quality) {
         canvas = new OffscreenCanvas(size.w, size.h);
-        const quality = await pickQuality(doc, total, opened, vcodec);
         // Keyframes are the most expensive frames; 5 s apart still seeks fine.
-        videoSource = new CanvasSource(canvas, { codec: vcodec, quality, keyFrameInterval: 5 });
+        videoSource = new CanvasSource(canvas, {
+          codec: vcodec, quality, keyFrameInterval: 5,
+          onEncodedPacket: packet => { videoBytes += packet.data.byteLength; },
+        });
         output.addVideoTrack(videoSource, { frameRate: doc.output.fps || 30 });
       }
 
       let audioSource: AudioBufferSource | null = null;
-      let acodec: AudioCodec | null = null;
-      if (wantAudio || fmt === 'wav') {
-        acodec = fmt === 'wav' ? 'pcm-s16'
-          : await getFirstEncodableAudioCodec(fmt === 'webm' ? ['opus', 'vorbis'] : ['aac', 'opus'], { numberOfChannels: 2, sampleRate: SR });
-        if (acodec) {
-          audioSource = new AudioBufferSource(fmt === 'wav' ? { codec: acodec } : { codec: acodec, quality: QUALITY_HIGH });
-          output.addAudioTrack(audioSource);
-        }
+      if (acodec) {
+        audioSource = new AudioBufferSource(fmt === 'wav' ? { codec: acodec } : { codec: acodec, quality: QUALITY_HIGH });
+        output.addAudioTrack(audioSource);
       }
 
       await output.start();
@@ -112,7 +146,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       for (let i = 0; i < opened.length; i++) {
         check();
         const o = opened[i];
-        const label = opened.length > 1 ? `Clip ${i + 1} of ${opened.length}` : 'Encoding';
+        const label = prefix + (opened.length > 1 ? `Clip ${i + 1} of ${opened.length}` : 'Encoding');
         if (videoSource && ctx) {
           let nextEmit = -Infinity;
           const sink = new VideoSampleSink(o.video);
@@ -142,18 +176,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       audioSource?.close();
       onProgress(0.995, 'Finishing file…');
       await output.finalize();
-      const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
-      const blob = new Blob([target.buffer!], { type: mime });
-      const ext = fmt === 'webm' ? '.webm' : fmt === 'wav' ? '.wav' : '.mp4';
-      const note = fmt === 'wav'
-        ? 'Audio only, uncompressed WAV.'
-        : `${size.w}×${size.h}, ${(vcodec ?? '').toUpperCase()}${acodec ? ' + ' + acodec.toUpperCase() : ', no audio'}.`;
-      return { blob, name: base + ext, note };
-    } catch (e) {
-      if (output && output.state !== 'finalized') { try { await output.cancel(); } catch { /* ignore */ } }
-      throw e;
-    } finally {
-      opened.forEach(o => o.input.dispose());
+      return { buffer: target.buffer!, videoBytes };
     }
   })();
 
@@ -163,12 +186,16 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
 // Rough bits needed for the same picture quality, relative to H.264.
 const CODEC_COST: Partial<Record<VideoCodec, number>> = { avc: 1, hevc: 0.7, vp9: 0.75, av1: 0.6, vp8: 1.1 };
 
-async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec): Promise<Quality> {
+/** The encoder quality, plus the bitrate the file must not exceed (null = no size target). */
+async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec): Promise<{ quality: Quality; bps: number | null }> {
   const q = doc.output.quality;
-  if (q === 'high') return QUALITY_HIGH;
-  if (q === 'medium') return QUALITY_MEDIUM;
-  if (q === 'small') return QUALITY_LOW;
-  if (q === 'custom') return new Quality({ bitrate: Math.round(doc.output.customMbps * 1e6) });
+  if (q === 'high') return { quality: QUALITY_HIGH, bps: null };
+  if (q === 'medium') return { quality: QUALITY_MEDIUM, bps: null };
+  if (q === 'small') return { quality: QUALITY_LOW, bps: null };
+  if (q === 'custom') {
+    const bps = Math.round(doc.output.customMbps * 1e6);
+    return { quality: new Quality({ bitrate: bps }), bps };
+  }
   // 'match': aim for the source's bits per second, adjusted for fewer frames
   // and a more efficient codec, so the export doesn't balloon past the originals.
   const outCost = CODEC_COST[vcodec] ?? 1;
@@ -188,8 +215,8 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
     secs += o.clip.duration;
   }
   // Browser encoders overshoot their target, so aim a bit under.
-  const bps = Math.max(600_000, bits / (secs || total) * 0.85 - 128_000);
-  return new Quality({ bitrate: Math.round(bps) });
+  const bps = Math.round(Math.max(300_000, bits / (secs || total) * 0.85 - 128_000));
+  return { quality: new Quality({ bitrate: bps }), bps };
 }
 
 async function mixClipAudio(
