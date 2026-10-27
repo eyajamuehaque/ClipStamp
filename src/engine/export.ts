@@ -195,6 +195,7 @@ const CODEC_COST: Partial<Record<VideoCodec, number>> = { avc: 1, hevc: 0.7, vp9
 // H.264 bits per pixel per frame below which browser encoders break into blocks on motion.
 // A heavily compressed source is noisy and hard to re-encode, so it can need more bits than it had.
 const MIN_BPP = 0.07;
+const MAX_GROWTH = 1.25; // the floor may grow the file to at most this much of the original
 
 /** The encoder quality, plus the bitrate the file must not exceed (null = no size target). */
 async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec, size: { w: number; h: number }): Promise<{ quality: Quality; bps: number | null }> {
@@ -224,9 +225,11 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
   }
   // Constant bitrate: browser encoders badly overshoot a variable target, but hold a
   // constant one, so the file lands at (or just under) the original in a single pass.
-  // Never below the floor for this frame size, so poor sources don't fall apart on motion.
-  const floor = size.w * size.h * outFps * MIN_BPP * outCost;
-  const bps = Math.round(Math.max(300_000, floor, bits / (secs || total) * 0.9 - AUDIO_BPS));
+  // Poor sources are lifted toward the floor for this frame size so they don't fall apart on
+  // motion, but never past MAX_GROWTH times the original's rate: small files still come first.
+  const src = bits / (secs || total);
+  const floor = Math.min(size.w * size.h * outFps * MIN_BPP * outCost, src * MAX_GROWTH - AUDIO_BPS);
+  const bps = Math.round(Math.max(300_000, floor, src * 0.9 - AUDIO_BPS));
   return { quality: new Quality({ bitrate: bps, bitrateMode: 'constant' }), bps };
 }
 
