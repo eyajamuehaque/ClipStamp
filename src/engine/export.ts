@@ -84,7 +84,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
           : (fmt === 'webm' ? ['vp9', 'vp8', 'av1'] : ['avc', 'hevc', 'vp9', 'av1']);
         vcodec = await getFirstEncodableVideoCodec(candidates, { width: size.w, height: size.h });
         if (!vcodec) throw new Error(`This browser can't encode ${size.w}×${size.h} video. Try a lower export resolution, or use Chrome/Edge.`);
-        plan = await pickQuality(doc, total, opened, vcodec);
+        plan = await pickQuality(doc, total, opened, vcodec, size);
       }
 
       if (wantAudio || fmt === 'wav') {
@@ -192,9 +192,12 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
 
 // Rough bits needed for the same picture quality, relative to H.264.
 const CODEC_COST: Partial<Record<VideoCodec, number>> = { avc: 1, hevc: 0.7, vp9: 0.75, av1: 0.6, vp8: 1.1 };
+// H.264 bits per pixel per frame below which browser encoders break into blocks on motion.
+// A heavily compressed source is noisy and hard to re-encode, so it can need more bits than it had.
+const MIN_BPP = 0.07;
 
 /** The encoder quality, plus the bitrate the file must not exceed (null = no size target). */
-async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec): Promise<{ quality: Quality; bps: number | null }> {
+async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: VideoCodec, size: { w: number; h: number }): Promise<{ quality: Quality; bps: number | null }> {
   const q = doc.output.quality;
   if (q === 'high') return { quality: QUALITY_HIGH, bps: null };
   if (q === 'medium') return { quality: QUALITY_MEDIUM, bps: null };
@@ -206,16 +209,14 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
   // 'match': aim for the source's bits per second, adjusted for fewer frames
   // and a more efficient codec, so the export doesn't balloon past the originals.
   const outCost = CODEC_COST[vcodec] ?? 1;
-  let bits = 0, secs = 0;
+  const cap = doc.output.fps || 60;
+  let bits = 0, secs = 0, outFps = 0;
   for (const o of opened) {
     let scale = 1;
-    const fps = doc.output.fps;
-    if (fps) {
-      try {
-        const srcFps = (await o.video.computePacketStats(120)).averagePacketRate;
-        if (srcFps > fps) scale *= fps / srcFps;
-      } catch { /* keep scale */ }
-    }
+    let srcFps = 30;
+    try { srcFps = (await o.video.computePacketStats(120)).averagePacketRate || 30; } catch { /* assume 30 */ }
+    if (srcFps > cap) scale *= cap / srcFps;
+    outFps = Math.max(outFps, Math.min(srcFps, cap));
     const srcCodec = await o.video.getCodec().catch(() => null);
     scale *= Math.min(1, outCost / ((srcCodec && CODEC_COST[srcCodec]) ?? 1));
     bits += o.clip.size * 8 * scale;
@@ -223,7 +224,9 @@ async function pickQuality(doc: Doc, total: number, opened: Opened[], vcodec: Vi
   }
   // Constant bitrate: browser encoders badly overshoot a variable target, but hold a
   // constant one, so the file lands at (or just under) the original in a single pass.
-  const bps = Math.round(Math.max(300_000, bits / (secs || total) * 0.9 - AUDIO_BPS));
+  // Never below the floor for this frame size, so poor sources don't fall apart on motion.
+  const floor = size.w * size.h * outFps * MIN_BPP * outCost;
+  const bps = Math.round(Math.max(300_000, floor, bits / (secs || total) * 0.9 - AUDIO_BPS));
   return { quality: new Quality({ bitrate: bps, bitrateMode: 'constant' }), bps };
 }
 
