@@ -1,10 +1,10 @@
 import { useRef } from 'react';
-import { useStore, useCurrentClip, patchClip, patchHide, patchAudioClip } from '../store';
+import { useStore, useCurrentClip, patchClip, patchHide, patchAudioClip, patchOverlay } from '../store';
 import { togglePlay, seek, seekOutput, stepFrame, pause, video } from '../player';
 import { clipOffset, clipOutDur, fmtClock, totalDuration, clamp, outputSize, toOutputTime } from '../engine/timeline';
 import { createRenderer } from '../engine/render';
 import { download } from '../engine/media';
-import { FULL_END } from '../types';
+import { FULL_END, type Overlay } from '../types';
 import { uid } from '../defaults';
 
 const TRIM_GAP = 0.05;
@@ -128,8 +128,75 @@ export default function Timeline() {
           {clip.speed !== 1 && <> · plays in {fmtClock(clipOutDur(clip), true)} at {clip.speed}×</>}</span>
         {trimmed && <button className="link" onClick={() => patchClip(clip.id, { trimStart: 0, trimEnd: dur })}>Reset trim</button>}
       </div>
+      <OverlayLanes total={total} now={outNow} />
       <HideLayers total={total} now={outNow} />
       <AudioLanes total={total} now={outNow} />
+    </div>
+  );
+}
+
+/** One row per watermark (logo or text), over the whole output video. Drag to move, drag the ends to change when it shows. */
+function OverlayLanes({ total, now }: { total: number; now: number }) {
+  const overlays = useStore(s => s.doc.overlays);
+  const selId = useStore(s => s.selectedOverlayId);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const dur = Math.max(total, 0.1);
+
+  const tAt = (x: number) => {
+    const r = rowsRef.current!.getBoundingClientRect();
+    return clamp((x - r.left) / r.width, 0, 1) * dur;
+  };
+
+  const select = (o: Overlay) =>
+    useStore.setState({ selectedOverlayId: o.id, selectedAudioId: null, selectedSeg: null, stageMode: 'output', tool: o.kind === 'text' ? 'text' : 'logo' });
+
+  const startDrag = (id: string) => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    pause();
+    const side = (e.target as HTMLElement).dataset.side;
+    const o = useStore.getState().doc.overlays.find(x => x.id === id)!;
+    const t0 = tAt(e.clientX), s0 = clamp(o.start, 0, dur), e0 = Math.min(o.end, dur);
+    select(o);
+    const move = (ev: PointerEvent) => {
+      const dt = tAt(ev.clientX) - t0;
+      if (side === 'l') { const v = clamp(s0 + dt, 0, e0 - 0.1); seekOutput(v); patchOverlay(id, { start: v }, 'overlay-drag'); }
+      else if (side === 'r') { const v = clamp(e0 + dt, s0 + 0.1, dur); seekOutput(v - 0.001); patchOverlay(id, { end: v >= dur - 0.001 ? FULL_END : v }, 'overlay-drag'); }
+      else {
+        const len = e0 - s0, st = clamp(s0 + dt, 0, Math.max(0, dur - len));
+        seekOutput(st);
+        patchOverlay(id, { start: st, end: e0 >= dur - 0.001 && st + len >= dur - 0.001 ? FULL_END : st + len }, 'overlay-drag');
+      }
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  return (
+    <div className="layers">
+      <div className="layers-head">Watermark — logos and text, whole video</div>
+      <div className="layer-rows" ref={rowsRef}>
+        {!overlays.length && <div className="layer-row" onPointerDown={e => { pause(); seekOutput(tAt(e.clientX)); }}><span className="layer-empty">Add a logo or text in the Logo or Text panel. Its timing shows up here.</span></div>}
+        {overlays.map(o => {
+          const st = clamp(o.start, 0, dur), en = clamp(o.end, 0, dur);
+          const label = o.kind === 'text' ? o.text || 'Text' : o.name;
+          return (
+            <div key={o.id} className={'layer-row' + (o.id === selId ? ' active' : '')}
+              onPointerDown={e => { if (e.target === e.currentTarget) { pause(); seekOutput(tAt(e.clientX)); select(o); } }}>
+              {st < dur && (
+                <div className={'seg-piece overlay-piece' + (o.id === selId ? ' on' : '')} onPointerDown={startDrag(o.id)}
+                  style={{ left: st / dur * 100 + '%', width: (en - st) / dur * 100 + '%' }}
+                  title={`${label}: ${fmtClock(st, true)}–${o.end >= FULL_END ? 'end' : fmtClock(en, true)}`}>
+                  <span data-side="l" className="seg-h l" />
+                  <span className="seg-label">{o.kind === 'text' ? 'T ' : '◩ '}{label}</span>
+                  <span data-side="r" className="seg-h r" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div className="layer-playhead" style={{ left: clamp(now / dur, 0, 1) * 100 + '%' }} />
+      </div>
     </div>
   );
 }
@@ -148,9 +215,7 @@ function HideLayers({ total, now }: { total: number; now: number }) {
   const hides = useStore(s => s.doc.hides);
   const activeId = useStore(s => s.activeHideId);
   const sel = useStore(s => s.selectedSeg);
-  const tool = useStore(s => s.tool);
   const rowsRef = useRef<HTMLDivElement>(null);
-  if (!hides.length && tool !== 'remove') return null;
   const dur = Math.max(total, 0.1);
 
   const tAt = (x: number) => {
@@ -185,9 +250,9 @@ function HideLayers({ total, now }: { total: number; now: number }) {
 
   return (
     <div className="layers">
-      <div className="layers-head">Logo areas — whole video, {fmtClock(total, true)}</div>
+      <div className="layers-head">Remove watermark — when each area is active</div>
       <div className="layer-rows" ref={rowsRef}>
-        {!hides.length && <div className="layer-row"><span className="layer-empty">Draw a box in “Logo areas” view to add one. Its timing shows up here.</span></div>}
+        {!hides.length && <div className="layer-row" onPointerDown={e => { pause(); seekOutput(tAt(e.clientX)); }}><span className="layer-empty">Add an area in the Remove panel. Its timing shows up here.</span></div>}
         {hides.map((h, i) => (
           <div key={h.id} className={'layer-row' + (h.id === activeId ? ' active' : '')}
             onPointerDown={e => { if (e.target === e.currentTarget) { pause(); seekOutput(tAt(e.clientX)); useStore.setState({ activeHideId: h.id, selectedSeg: null, tool: 'remove' }); } }}>
@@ -226,9 +291,7 @@ function packRows<T extends { start: number; len: number }>(items: T[]) {
 function AudioLanes({ total, now }: { total: number; now: number }) {
   const audio = useStore(s => s.doc.audio);
   const selId = useStore(s => s.selectedAudioId);
-  const tool = useStore(s => s.tool);
   const rowsRef = useRef<HTMLDivElement>(null);
-  if (!audio.clips.length && tool !== 'audio') return null;
   const span = Math.max(total, 0.1);
 
   const tAt = (x: number) => {
@@ -275,7 +338,7 @@ function AudioLanes({ total, now }: { total: number; now: number }) {
   const rows = packRows(audio.clips);
   return (
     <div className="layers">
-      <div className="layers-head">Audio — whole video, {fmtClock(total, true)}</div>
+      <div className="layers-head">Audio — whole video</div>
       <div className="layer-rows" ref={rowsRef}>
         {!rows.length && <div className="layer-row" onPointerDown={onLane}><span className="layer-empty">Add audio in the Audio panel. It lands at the playhead and shows up here.</span></div>}
         {rows.map((row, i) => (

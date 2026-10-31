@@ -188,6 +188,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb { background: var(--lead);
 .seg-label { padding: 0 10px; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg-h { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .seg-h.l { left: 0; } .seg-h.r { right: 0; }
+.overlay-piece { background: rgba(178,132,255,.18); border-color: rgba(178,132,255,.65); }
+.overlay-piece.on { background: #b284ff; color: #1a1029; }
 .audio-piece { background: rgba(94,182,255,.18); border-color: rgba(94,182,255,.65); }
 .audio-piece.on { background: #5eb6ff; color: #0b1a29; }
 .audio-src { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
