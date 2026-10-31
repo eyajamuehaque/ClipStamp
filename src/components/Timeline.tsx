@@ -18,36 +18,43 @@ export default function Timeline() {
   if (!clip) return null;
   const dur = clip.duration || 1;
   const total = totalDuration(clips);
-  const outNow = clipOffset(clips, clip.id) + (clamp(time, clip.trimStart, clip.trimEnd) - clip.trimStart) / clip.speed;
-  const pct = (t: number) => clamp(t / dur, 0, 1) * 100 + '%';
+  const span = Math.max(total, 0.1);
+  const offset = clipOffset(clips, clip.id);
+  const outNow = offset + (clamp(time, clip.trimStart, clip.trimEnd) - clip.trimStart) / clip.speed;
+  const pct = (t: number) => clamp(t / span, 0, 1) * 100 + '%';
+  const clipNo = clips.findIndex(c => c.id === clip.id) + 1;
 
+  // The track spans the whole output video; scrubbing hops between clips.
   const timeAt = (clientX: number) => {
     const r = trackRef.current!.getBoundingClientRect();
-    return clamp((clientX - r.left) / r.width, 0, 1) * dur;
+    return clamp((clientX - r.left) / r.width, 0, 1) * span;
   };
 
   const startScrub = (e: React.PointerEvent) => {
     pause();
-    seek(timeAt(e.clientX));
-    const move = (ev: PointerEvent) => seek(timeAt(ev.clientX));
+    seekOutput(timeAt(e.clientX));
+    const move = (ev: PointerEvent) => seekOutput(timeAt(ev.clientX));
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
 
+  // Trim the current clip by dragging its edges. Uses drag distance at the scale from drag start,
+  // because the whole layout shifts as the clip gets longer or shorter.
   const startTrim = (which: 'start' | 'end') => (e: React.PointerEvent) => {
     e.stopPropagation();
     pause();
+    const perPx = span / trackRef.current!.getBoundingClientRect().width, x0 = e.clientX;
+    const c0 = useStore.getState().doc.clips.find(x => x.id === clip.id)!;
     const move = (ev: PointerEvent) => {
       const c = useStore.getState().doc.clips.find(x => x.id === clip.id)!;
-      const t = timeAt(ev.clientX);
-      if (which === 'start') { const v = clamp(t, 0, c.trimEnd - TRIM_GAP); patchClip(clip.id, { trimStart: v }, 'trim'); seek(v); }
-      else { const v = clamp(t, c.trimStart + TRIM_GAP, dur); patchClip(clip.id, { trimEnd: v }, 'trim'); seek(v); }
+      const ds = (ev.clientX - x0) * perPx * c0.speed;
+      if (which === 'start') { const v = clamp(c0.trimStart + ds, 0, c.trimEnd - TRIM_GAP); patchClip(clip.id, { trimStart: v }, 'trim'); seek(v); }
+      else { const v = clamp(c0.trimEnd + ds, c.trimStart + TRIM_GAP, dur); patchClip(clip.id, { trimEnd: v }, 'trim'); seek(v); }
     };
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-    move(e.nativeEvent);
   };
 
   const splitHere = () => {
@@ -71,12 +78,12 @@ export default function Timeline() {
     const ctx = canvas.getContext('2d')!;
     createRenderer().render(ctx, size.w, size.h,
       { w: video.videoWidth, h: video.videoHeight, draw: (c, w, h) => c.drawImage(video, 0, 0, w, h) },
-      clip, s.doc, video.currentTime, toOutputTime(s.doc.clips, clip, video.currentTime), total);
+      clip, s.doc, toOutputTime(s.doc.clips, clip, video.currentTime), total);
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     download(blob, clip.name.replace(/\.[^.]+$/, '') + '-' + fmtClock(video.currentTime).replace(/:/g, '-') + '.png');
   };
 
-  const ticks = buildTicks(dur, trackRef.current?.clientWidth ?? 600);
+  const ticks = buildTicks(span, trackRef.current?.clientWidth ?? 600);
   const trimmed = clip.trimStart > 0.01 || clip.trimEnd < dur - 0.01;
 
   return (
@@ -103,19 +110,25 @@ export default function Timeline() {
         <div className="ruler">
           {ticks.map(t => <span key={t} className="tick" style={{ left: pct(t) }}><i>{fmtClock(t)}</i></span>)}
         </div>
-        <div className="trim-mask" style={{ left: 0, width: pct(clip.trimStart) }} />
-        <div className="trim-mask" style={{ left: pct(clip.trimEnd), right: 0 }} />
-        <div className="trim-range" style={{ left: pct(clip.trimStart), width: `calc(${pct(clip.trimEnd)} - ${pct(clip.trimStart)})` }} />
-        <div className="trim-handle" style={{ left: pct(clip.trimStart) }} onPointerDown={startTrim('start')} title="Drag to set where this clip starts" />
-        <div className="trim-handle end" style={{ left: pct(clip.trimEnd) }} onPointerDown={startTrim('end')} title="Drag to set where this clip ends" />
-        <div className="playhead" style={{ left: pct(time) }} />
+        {clips.map((c, i) => {
+          const off = clipOffset(clips, c.id);
+          return (
+            <div key={c.id} className={'clip-block' + (c.id === clip.id ? ' current' : '')}
+              style={{ left: pct(off), width: `calc(${pct(off + clipOutDur(c))} - ${pct(off)})` }} title={`${i + 1}. ${c.name}`}>
+              {clips.length > 1 && <span>{i + 1}</span>}
+            </div>
+          );
+        })}
+        <div className="trim-handle" style={{ left: pct(offset) }} onPointerDown={startTrim('start')} title="Drag to set where this clip starts" />
+        <div className="trim-handle end" style={{ left: pct(offset + clipOutDur(clip)) }} onPointerDown={startTrim('end')} title="Drag to set where this clip ends" />
+        <div className="playhead" style={{ left: pct(outNow) }} />
       </div>
       <div className="trim-info">
-        <span>Keep <b>{fmtClock(clip.trimStart, true)}</b>–<b>{fmtClock(clip.trimEnd, true)}</b> of this clip
+        <span>{clips.length > 1 && <>Clip {clipNo} of {clips.length} · </>}Keep <b>{fmtClock(clip.trimStart, true)}</b>–<b>{fmtClock(clip.trimEnd, true)}</b> of this clip
           {clip.speed !== 1 && <> · plays in {fmtClock(clipOutDur(clip), true)} at {clip.speed}×</>}</span>
         {trimmed && <button className="link" onClick={() => patchClip(clip.id, { trimStart: 0, trimEnd: dur })}>Reset trim</button>}
       </div>
-      <HideLayers dur={dur} />
+      <HideLayers total={total} now={outNow} />
       <AudioLanes total={total} now={outNow} />
     </div>
   );
@@ -130,15 +143,15 @@ function buildTicks(dur: number, width: number) {
   return out;
 }
 
-/** One row per logo-removal area: the pieces are when that area is active. */
-function HideLayers({ dur }: { dur: number }) {
+/** One row per logo-removal area, over the whole output video: the pieces are when that area is active. */
+function HideLayers({ total, now }: { total: number; now: number }) {
   const hides = useStore(s => s.doc.hides);
   const activeId = useStore(s => s.activeHideId);
   const sel = useStore(s => s.selectedSeg);
-  const time = useStore(s => s.time);
   const tool = useStore(s => s.tool);
   const rowsRef = useRef<HTMLDivElement>(null);
   if (!hides.length && tool !== 'remove') return null;
+  const dur = Math.max(total, 0.1);
 
   const tAt = (x: number) => {
     const r = rowsRef.current!.getBoundingClientRect();
@@ -158,9 +171,9 @@ function HideLayers({ dur }: { dur: number }) {
       const cur = useStore.getState().doc.hides.find(x => x.id === hideId)!;
       const segs = cur.segments.map(s => {
         if (s.id !== segId) return s;
-        if (side === 'l') { const v = clamp(s0 + dt, 0, e0 - 0.1); seek(v); return { ...s, start: v }; }
-        if (side === 'r') { let v = clamp(e0 + dt, s0 + 0.1, dur); seek(v - 0.001); if (v >= dur - 0.001) v = FULL_END; return { ...s, end: v }; }
-        const len = e0 - s0; const st = clamp(s0 + dt, 0, Math.max(0, dur - len)); seek(st);
+        if (side === 'l') { const v = clamp(s0 + dt, 0, e0 - 0.1); seekOutput(v); return { ...s, start: v }; }
+        if (side === 'r') { let v = clamp(e0 + dt, s0 + 0.1, dur); seekOutput(v - 0.001); if (v >= dur - 0.001) v = FULL_END; return { ...s, end: v }; }
+        const len = e0 - s0; const st = clamp(s0 + dt, 0, Math.max(0, dur - len)); seekOutput(st);
         return { ...s, start: st, end: e0 >= dur - 0.001 && st + len >= dur - 0.001 ? FULL_END : st + len };
       });
       patchHide(hideId, { segments: segs }, 'seg-drag');
@@ -172,12 +185,12 @@ function HideLayers({ dur }: { dur: number }) {
 
   return (
     <div className="layers">
-      <div className="layers-head">Logo areas — when each one is active</div>
+      <div className="layers-head">Logo areas — whole video, {fmtClock(total, true)}</div>
       <div className="layer-rows" ref={rowsRef}>
         {!hides.length && <div className="layer-row"><span className="layer-empty">Draw a box in “Logo areas” view to add one. Its timing shows up here.</span></div>}
         {hides.map((h, i) => (
           <div key={h.id} className={'layer-row' + (h.id === activeId ? ' active' : '')}
-            onPointerDown={e => { if (e.target === e.currentTarget) { pause(); seek(tAt(e.clientX)); useStore.setState({ activeHideId: h.id, selectedSeg: null, tool: 'remove' }); } }}>
+            onPointerDown={e => { if (e.target === e.currentTarget) { pause(); seekOutput(tAt(e.clientX)); useStore.setState({ activeHideId: h.id, selectedSeg: null, tool: 'remove' }); } }}>
             {h.segments.filter(s => s.start < dur).map(s => {
               const st = clamp(s.start, 0, dur), en = clamp(s.end, 0, dur);
               const on = sel?.hideId === h.id && sel.segId === s.id;
@@ -193,7 +206,7 @@ function HideLayers({ dur }: { dur: number }) {
             })}
           </div>
         ))}
-        <div className="layer-playhead" style={{ left: clamp(time / dur, 0, 1) * 100 + '%' }} />
+        <div className="layer-playhead" style={{ left: clamp(now / dur, 0, 1) * 100 + '%' }} />
       </div>
     </div>
   );

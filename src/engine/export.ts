@@ -163,7 +163,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
               if (outTs < nextEmit - 0.25 / cap) continue; // keep at most `cap` frames per second
               nextEmit = outTs + 1 / cap;
               const src = { w: sample.displayWidth, h: sample.displayHeight, draw: (c: any, w: number, h: number) => sample.draw(c, 0, 0, w, h) };
-              renderer.render(ctx, size.w, size.h, src, o.clip, doc, sample.timestamp, outTs, total);
+              renderer.render(ctx, size.w, size.h, src, o.clip, doc, outTs, total);
               const dur = Math.max(1 / 240, Math.min(sample.duration, o.clip.trimEnd - sample.timestamp) / o.clip.speed);
               await videoSource.add(outTs, dur);
               const p = Math.min(0.99, (outTs - 0) / total);
@@ -323,7 +323,7 @@ async function renderGif(doc: Doc, opened: Opened[], total: number, onProgress: 
         if (outTs < nextEmit - 0.25 / fps) continue;
         nextEmit = Math.max(nextEmit + 1 / fps, outTs + 0.5 / fps);
         const src = { w: sample.displayWidth, h: sample.displayHeight, draw: (c: any, ww: number, hh: number) => sample.draw(c, 0, 0, ww, hh) };
-        renderer.render(ctx, w, h, src, o.clip, doc, sample.timestamp, outTs, total);
+        renderer.render(ctx, w, h, src, o.clip, doc, outTs, total);
         const { data } = ctx.getImageData(0, 0, w, h);
         const palette = quantize(data, 256);
         gif.writeFrame(applyPalette(data, palette), w, h, { palette, delay: Math.round(1000 / fps) });

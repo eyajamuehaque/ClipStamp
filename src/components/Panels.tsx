@@ -266,7 +266,8 @@ export function RemovePanel() {
   const active = useStore(s => s.doc.hides.find(h => h.id === s.activeHideId));
   const sel = useStore(s => s.selectedSeg);
   const set = (p: Parameters<typeof patchHide>[1], key?: string) => active && patchHide(active.id, p, key);
-  const dur = useCurrentClip()?.duration ?? 0;
+  const dur = useStore(s => totalDuration(s.doc.clips));
+  useStore(s => s.time); // re-render as the playhead moves, for "Split at playhead"
 
   const add = () => {
     const r = newHide(0.4, 0.46, 0.2, 0.08, active);
@@ -274,7 +275,7 @@ export function RemovePanel() {
     useStore.setState({ activeHideId: r.id, stageMode: 'hide' });
   };
   const segAtPlayhead = () => {
-    const t = video.currentTime;
+    const t = outputNow();
     return active?.segments.find(s => t > s.start + 0.05 && t < Math.min(s.end, dur) - 0.05) ?? null;
   };
 
@@ -314,14 +315,14 @@ export function RemovePanel() {
             <Note>Each area has a row under the timeline. Drag its pieces to move them, drag their ends to change when they start and stop.</Note>
             <div className="row-actions">
               <button className="btn ghost sm" onClick={() => {
-                const len = Math.min(3, dur), st = clamp(video.currentTime, 0, Math.max(0, dur - len));
+                const len = Math.min(3, dur), st = clamp(outputNow(), 0, Math.max(0, dur - len));
                 const seg = { id: uid(), start: st, end: st + len };
                 set({ segments: [...active.segments, seg] });
                 useStore.setState({ selectedSeg: { hideId: active.id, segId: seg.id } });
               }}>Add 3s at playhead</button>
               <button className="btn ghost sm" disabled={!segAtPlayhead()} onClick={() => {
                 const seg = segAtPlayhead(); if (!seg) return;
-                const t = video.currentTime, second = { id: uid(), start: t, end: seg.end };
+                const t = outputNow(), second = { id: uid(), start: t, end: seg.end };
                 set({ segments: [...active.segments.map(s => s.id === seg.id ? { ...s, end: t } : s), second] });
               }}>Split at playhead</button>
               <button className="btn ghost sm" onClick={() => set({ segments: [{ id: uid(), start: 0, end: FULL_END }] })}>Whole video</button>

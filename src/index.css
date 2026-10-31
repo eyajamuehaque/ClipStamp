@@ -166,8 +166,10 @@ input[type=range]:focus-visible::-webkit-slider-thumb { background: var(--lead);
 .ruler { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r); }
 .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
 .tick i { position: absolute; top: 3px; left: 4px; font: 500 10.5px var(--tc); color: var(--dim); font-style: normal; white-space: nowrap; }
-.trim-mask { position: absolute; top: 0; bottom: 0; background: rgba(10, 12, 16, .62); pointer-events: none; }
-.trim-range { position: absolute; top: 0; bottom: 0; border-top: 2px solid var(--lead); border-bottom: 2px solid var(--lead); pointer-events: none; }
+.clip-block { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border-left: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.04); pointer-events: none; }
+.clip-block:first-child { border-left: 0; }
+.clip-block span { position: absolute; left: 5px; bottom: 3px; font: 600 10.5px var(--tc); color: var(--dim); }
+.clip-block.current { background: rgba(242,193,78,.08); border-top: 2px solid var(--lead); border-bottom: 2px solid var(--lead); }
 .trim-handle { position: absolute; top: -3px; bottom: -3px; width: 12px; margin-left: -12px; background: var(--lead); border-radius: 4px 0 0 4px; cursor: ew-resize; z-index: 2; }
 .trim-handle.end { margin-left: 0; border-radius: 0 4px 4px 0; }
 .trim-handle::after { content: ""; position: absolute; left: 5px; top: 30%; bottom: 30%; width: 2px; background: var(--lead-ink); opacity: .5; }

@@ -45,17 +45,18 @@ export default function Stage() {
         const W = Math.round(full.w * k), H = Math.round(full.h * k);
         if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
         const outT = toOutputTime(doc.clips, clip, video.currentTime);
-        bounds.current = renderer.render(ctx, W, H, src, clip, doc, video.currentTime, outT, totalDuration(doc.clips));
+        bounds.current = renderer.render(ctx, W, H, src, clip, doc, outT, totalDuration(doc.clips));
         const sel = bounds.current.find(b => b.id === s.selectedOverlayId);
         if (sel && !s.playing) drawSelection(ctx, sel);
       } else {
         const rot = rotatedDims(src.w, src.h, clip.rotation);
         const k = Math.min(1, MAX_PREVIEW / Math.max(rot.w, rot.h));
-        const f = renderer.drawFrame(src, clip, doc, video.currentTime, k);
+        const outT = toOutputTime(doc.clips, clip, video.currentTime);
+        const f = renderer.drawFrame(src, clip, doc, outT, k);
         if (canvas.width !== f.width || canvas.height !== f.height) { canvas.width = f.width; canvas.height = f.height; }
         ctx.drawImage(f, 0, 0);
         if (s.stageMode === 'crop') drawCrop(ctx, canvas.width, canvas.height, clip.crop, !!clip.cropLock);
-        else drawHides(ctx, canvas.width, canvas.height, video.currentTime);
+        else drawHides(ctx, canvas.width, canvas.height, outT);
       }
     };
     loop();

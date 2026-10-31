@@ -52,8 +52,11 @@ export function createRenderer() {
   let frame: OffscreenCanvas | null = null;
   let fctx: OffscreenCanvasRenderingContext2D | null = null;
 
-  /** Draw the rotated, flipped, colour-graded source with remove-logo applied. Returns the frame canvas. */
-  function drawFrame(src: FrameSource, clip: Clip, doc: Doc, srcTime: number, scale: number) {
+  /**
+   * Draw the rotated, flipped, colour-graded source with remove-logo applied. Returns the frame canvas.
+   * outTime is on the output timeline: logo areas are timed against the whole video.
+   */
+  function drawFrame(src: FrameSource, clip: Clip, doc: Doc, outTime: number, scale: number) {
     const rot = rotatedDims(src.w, src.h, clip.rotation);
     const FW = Math.max(2, Math.round(rot.w * scale)), FH = Math.max(2, Math.round(rot.h * scale));
     const NW = src.w * scale, NH = src.h * scale;
@@ -73,7 +76,7 @@ export function createRenderer() {
     c.scale(doc.framing.flipH ? -1 : 1, doc.framing.flipV ? -1 : 1);
     src.draw(c, NW, NH);
     c.restore();
-    if (doc.hidesEnabled) applyHideRegions(c, { x: 0, y: 0, w: FW, h: FH }, srcTime, doc.hides);
+    if (doc.hidesEnabled) applyHideRegions(c, { x: 0, y: 0, w: FW, h: FH }, outTime, doc.hides);
     return frame;
   }
 
@@ -83,13 +86,13 @@ export function createRenderer() {
    */
   function render(
     out: Ctx2D, W: number, H: number, src: FrameSource, clip: Clip, doc: Doc,
-    srcTime: number, outTime: number, total: number,
+    outTime: number, total: number,
   ): OverlayBounds[] {
     const rot = rotatedDims(src.w, src.h, clip.rotation);
     const crop = clip.crop ?? { x: 0, y: 0, w: 1, h: 1 };
     // Only decode/process as many pixels as the output actually needs.
     const scale = Math.min(1, Math.max(W / (rot.w * crop.w), H / (rot.h * crop.h)) * 1.02);
-    const f = drawFrame(src, clip, doc, srcTime, scale);
+    const f = drawFrame(src, clip, doc, outTime, scale);
     const sx = crop.x * f.width, sy = crop.y * f.height, sw = crop.w * f.width, sh = crop.h * f.height;
     const k = Math.min(W / sw, H / sh);
     const dw = sw * k, dh = sh * k, dx = (W - dw) / 2, dy = (H - dh) / 2;
