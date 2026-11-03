@@ -1,10 +1,10 @@
 import { useRef } from 'react';
 import { useStore, useCurrentClip, patchClip, patchHide, patchAudioClip, patchOverlay } from '../store';
-import { togglePlay, seek, seekOutput, stepFrame, pause, video } from '../player';
+import { togglePlay, seek, seekOutput, stepFrame, pause, video, outputNow } from '../player';
 import { clipOffset, clipOutDur, fmtClock, totalDuration, clamp, outputSize, toOutputTime } from '../engine/timeline';
 import { createRenderer } from '../engine/render';
 import { download } from '../engine/media';
-import { FULL_END, type Overlay } from '../types';
+import { FULL_END, type Doc, type Overlay } from '../types';
 import { uid } from '../defaults';
 
 const TRIM_GAP = 0.05;
@@ -57,18 +57,17 @@ export default function Timeline() {
     window.addEventListener('pointerup', up);
   };
 
+  // Split cuts whatever is selected (audio, text/logo, removal piece) at the playhead, or the
+  // video clip when nothing is. Pressing it again without moving the playhead cuts every layer there.
   const splitHere = () => {
-    // Split = duplicate the clip and divide the trim range at the playhead.
-    const t = video.currentTime;
-    if (t <= clip.trimStart + TRIM_GAP || t >= clip.trimEnd - TRIM_GAP) return;
-    const second = { ...clip, id: uid(), trimStart: t };
-    useStore.getState().edit(d => {
-      const i = d.clips.findIndex(c => c.id === clip.id);
-      const clipsNext = [...d.clips];
-      clipsNext[i] = { ...clip, trimEnd: t };
-      clipsNext.splice(i + 1, 0, second);
-      return { ...d, clips: clipsNext };
-    });
+    const s = useStore.getState();
+    const t = outputNow();
+    const all = lastSplitAt !== null && Math.abs(lastSplitAt - t) < 0.01;
+    lastSplitAt = t;
+    const target = s.selectedAudioId ?? s.selectedOverlayId ?? s.selectedSeg?.segId ?? null;
+    const want = (id: string) => all || id === target;
+    const cutVideo = all || !target;
+    s.edit(d => splitDoc(d, t, total, want, cutVideo ? { id: clip.id, at: video.currentTime } : null));
   };
 
   const snapshot = async () => {
@@ -102,7 +101,7 @@ export default function Timeline() {
         </button>
         <span className="tc"><b>{fmtClock(outNow, true)}</b> / {fmtClock(total, true)}</span>
         <span className="spacer" />
-        <button className="btn ghost sm" onClick={splitHere} title="Split this clip at the playhead (S)">Split</button>
+        <button className="btn ghost sm" onClick={splitHere} title="Split this clip at the playhead (S). Splits the selected audio, text, logo or removal piece instead when one is selected; press again to split every layer">Split</button>
         <button className="btn ghost sm" onClick={snapshot} title="Save this frame as a PNG">Save frame</button>
       </div>
 
@@ -201,6 +200,38 @@ function OverlayLanes({ total, now }: { total: number; now: number }) {
   );
 }
 
+let lastSplitAt: number | null = null;
+
+/** Cut the chosen layers at output time t. `video` also cuts that clip at source time `at`. */
+function splitDoc(d: Doc, t: number, total: number, want: (id: string) => boolean, video: { id: string; at: number } | null): Doc {
+  const inside = (st: number, en: number) => t > st + TRIM_GAP && t < Math.min(en, total) - TRIM_GAP;
+
+  const clips = d.clips.flatMap(c => {
+    if (!video || c.id !== video.id || video.at <= c.trimStart + TRIM_GAP || video.at >= c.trimEnd - TRIM_GAP) return [c];
+    return [{ ...c, trimEnd: video.at }, { ...c, id: uid(), trimStart: video.at }];
+  });
+
+  const audioClips = d.audio.clips.flatMap(a => {
+    if (!want(a.id) || !inside(a.start, a.start + a.len)) return [a];
+    const cut = t - a.start, srcDur = d.audio.sources.find(x => x.id === a.sourceId)?.duration;
+    let nextIn = a.in + cut;
+    if (a.loop && srcDur) nextIn %= srcDur;
+    return [{ ...a, len: cut }, { ...a, id: uid(), start: t, in: nextIn, len: a.len - cut }];
+  });
+
+  // The second half carries on from the first, so it doesn't replay the entrance animation.
+  const overlays = d.overlays.flatMap(o =>
+    !want(o.id) || !inside(o.start, o.end) ? [o] : [{ ...o, end: t }, { ...o, id: uid(), start: t, entrance: 'none' as const }]);
+
+  const hides = d.hides.map(h => {
+    if (!h.segments.some(sg => want(sg.id) && inside(sg.start, sg.end))) return h;
+    return { ...h, segments: h.segments.flatMap(sg =>
+      !want(sg.id) || !inside(sg.start, sg.end) ? [sg] : [{ ...sg, end: t }, { ...sg, id: uid(), start: t }]) };
+  });
+
+  return { ...d, clips, overlays, hides, audio: { ...d.audio, clips: audioClips } };
+}
+
 function buildTicks(dur: number, width: number) {
   const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800];
   let iv = steps[steps.length - 1];
@@ -230,7 +261,7 @@ function HideLayers({ total, now }: { total: number; now: number }) {
     const h = useStore.getState().doc.hides.find(x => x.id === hideId)!;
     const seg = h.segments.find(s => s.id === segId)!;
     const t0 = tAt(e.clientX), s0 = seg.start, e0 = Math.min(seg.end, dur);
-    useStore.setState({ activeHideId: hideId, selectedSeg: { hideId, segId }, tool: 'remove' });
+    useStore.setState({ activeHideId: hideId, selectedSeg: { hideId, segId }, selectedAudioId: null, selectedOverlayId: null, tool: 'remove' });
     const move = (ev: PointerEvent) => {
       const dt = tAt(ev.clientX) - t0;
       const cur = useStore.getState().doc.hides.find(x => x.id === hideId)!;
