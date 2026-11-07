@@ -533,10 +533,16 @@ let job: ExportJob | null = null;
 
 export function cancelExport() { job?.cancel(); }
 
+function exportErrorText(e: any) {
+  if (e?.name === 'QuotaExceededError') return 'Not enough free disk space for this video. Free up some space, or lower the quality or resolution.';
+  if (e instanceof RangeError) return 'This video is too big to export in this browser. Lower the quality or resolution, or try Chrome or Edge.';
+  return e?.message ?? String(e);
+}
+
 async function runExport() {
   const old = useStore.getState().exportResult;
   if (old) URL.revokeObjectURL(old.url);
-  useStore.setState({ exporting: true, exportResult: null, exportProgress: { p: 0, msg: 'Starting…' } });
+  useStore.setState({ exporting: true, exportResult: null, exportError: null, exportProgress: { p: 0, msg: 'Starting…' } });
   const t0 = performance.now();
   // Progress fires every frame; re-rendering the UI that often steals time from encoding.
   let last = 0;
@@ -552,7 +558,12 @@ async function runExport() {
     notify('Export finished.');
   } catch (e: any) {
     if (e instanceof ExportCanceled) notify('Export canceled.');
-    else { console.error(e); notify('Export failed: ' + (e?.message ?? e), 'error'); }
+    else {
+      console.error(e);
+      const text = exportErrorText(e);
+      useStore.setState({ exportError: text }); // long exports often finish unattended, so this outlasts the toast
+      notify('Export failed: ' + text, 'error');
+    }
   } finally {
     job = null;
     useStore.setState({ exporting: false, exportProgress: null });
@@ -565,6 +576,7 @@ export function ExportPanel() {
   const exporting = useStore(s => s.exporting);
   const prog = useStore(s => s.exportProgress);
   const result = useStore(s => s.exportResult);
+  const error = useStore(s => s.exportError);
   const set = (p: Partial<typeof o>, key?: string) => patchDoc('output', p, key);
   const size = exportSize(doc);
   const total = totalDuration(doc.clips);
@@ -619,6 +631,7 @@ export function ExportPanel() {
             <span>{Math.round(prog.p * 100)}% · {prog.msg}</span>
           </div>
         )}
+        {error && <div className="result error" role="alert"><p><b>Export failed</b><br />{error}</p></div>}
         {result && (
           <div className="result">
             <p><b>{result.name}</b><br />{fmtBytes(result.size)} · made in {result.secs.toFixed(1)}s<br />{result.note}</p>

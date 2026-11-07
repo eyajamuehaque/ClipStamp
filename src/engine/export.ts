@@ -2,11 +2,12 @@
 import {
   ALL_FORMATS, AudioBufferSink, AudioBufferSource, BlobSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat,
   Output, QUALITY_HIGH, QUALITY_LOW, QUALITY_MEDIUM, Quality, VideoSampleSink, WavOutputFormat, WebMOutputFormat,
-  getFirstEncodableAudioCodec, getFirstEncodableVideoCodec,
+  StreamTarget, getFirstEncodableAudioCodec, getFirstEncodableVideoCodec,
   type AudioCodec, type InputAudioTrack, type InputVideoTrack, type VideoCodec,
 } from 'mediabunny';
 import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import type { Clip, Doc } from '../types';
+import { uid } from '../defaults';
 import { createRenderer, preloadFonts, preloadImages } from './render';
 import { clipOutDur, exportSize, outputSize, totalDuration } from './timeline';
 import { RateControlledVideo } from './ratecontrol';
@@ -22,7 +23,31 @@ const SR = 48000;
 const AUDIO_BPS = 128_000;
 const WIN = 30; // seconds of audio rendered per chunk (keeps memory flat on long videos)
 
+const DISK_PREFIX = 'export-';
+
 interface Opened { clip: Clip; input: Input; video: InputVideoTrack; audio: InputAudioTrack | null }
+
+/**
+ * A file in the browser's private disk storage (OPFS) to write the export into, so long videos
+ * don't have to fit in memory. Null means this browser can't, and the export is built in memory.
+ */
+async function openDiskFile() {
+  try {
+    const dir = await navigator.storage.getDirectory();
+    const handle = await dir.getFileHandle(DISK_PREFIX + uid(), { create: true });
+    return { handle, writable: await handle.createWritable() };
+  } catch { return null; }
+}
+
+/** Frees the disk space of past exports. One still being written is locked, so it's left alone. */
+export async function clearExportFiles() {
+  try {
+    const dir: any = await navigator.storage.getDirectory();
+    const names: string[] = [];
+    for await (const name of dir.keys()) if (name.startsWith(DISK_PREFIX)) names.push(name);
+    for (const name of names) { try { await dir.removeEntry(name); } catch { /* in use */ } }
+  } catch { /* no disk storage here */ }
+}
 
 export function startExport(doc: Doc, onProgress: (p: number, msg: string) => void): ExportJob {
   let cancelled = false;
@@ -30,6 +55,7 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
   const check = () => { if (cancelled) throw new ExportCanceled(); };
 
   const done = (async () => {
+    await clearExportFiles();
     const fmt = doc.output.format;
     const clips = doc.clips;
     if (!clips.length) throw new Error('Add a video first.');
@@ -92,10 +118,8 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
           : await getFirstEncodableAudioCodec(fmt === 'webm' ? ['opus', 'vorbis'] : ['aac', 'opus'], { numberOfChannels: 2, sampleRate: SR });
       }
 
-      const result = await encodeOnce(plan?.quality ?? null);
+      const blob = await encodeOnce(plan?.quality ?? null);
 
-      const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
-      const blob = new Blob([result.buffer], { type: mime });
       const ext = fmt === 'webm' ? '.webm' : fmt === 'wav' ? '.wav' : '.mp4';
       const note = fmt === 'wav'
         ? 'Audio only, uncompressed WAV.'
@@ -105,14 +129,17 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       (rateControl as RateControlledVideo | null)?.cancel();
       const out = output as Output | null; // assigned inside encodeOnce, which TS can't see
       if (out && out.state !== 'finalized') { try { await out.cancel(); } catch { /* ignore */ } }
+      await clearExportFiles();
       throw e;
     } finally {
       opened.forEach(o => o.input.dispose());
     }
 
     async function encodeOnce(quality: Quality | null) {
-      const target = new BufferTarget();
-      output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+      const disk = await openDiskFile();
+      const target = disk ? new StreamTarget(disk.writable, { chunked: true }) : new BufferTarget();
+      // On disk the MP4 index goes at the end: 'in-memory' would hold every frame in RAM until the finish.
+      output = new Output({ format: fmt === 'webm' ? new WebMOutputFormat() : fmt === 'wav' ? new WavOutputFormat() : new Mp4OutputFormat({ fastStart: disk ? false : 'in-memory' }), target });
 
       let videoSource: { add(ts: number, dur: number): Promise<void>; close(): Promise<void> } | null = null;
       let canvas: OffscreenCanvas | null = null;
@@ -183,7 +210,10 @@ export function startExport(doc: Doc, onProgress: (p: number, msg: string) => vo
       audioSource?.close();
       onProgress(0.995, 'Finishing file…');
       await output.finalize();
-      return { buffer: target.buffer! };
+      const mime = fmt === 'webm' ? 'video/webm' : fmt === 'wav' ? 'audio/wav' : 'video/mp4';
+      if (!disk) return new Blob([(target as BufferTarget).buffer!], { type: mime });
+      const file = await disk.handle.getFile();
+      return file.slice(0, file.size, mime);
     }
   })();
 

@@ -19,6 +19,7 @@ interface UI {
   // Kept here, not in the Export panel, so switching tools mid-export loses nothing.
   exportProgress: { p: number; msg: string } | null;
   exportResult: { url: string; name: string; size: number; note: string; secs: number } | null;
+  exportError: string | null;
   notice: { text: string; kind: 'info' | 'error' } | null;
 }
 
@@ -51,6 +52,7 @@ export const useStore = create<State>((set, get) => ({
   exporting: false,
   exportProgress: null,
   exportResult: null,
+  exportError: null,
   notice: null,
 
   doc: emptyDoc(),
